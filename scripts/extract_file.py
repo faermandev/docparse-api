@@ -1,7 +1,7 @@
-"""Temporary helper: run the extraction pipeline synchronously on a local file.
+"""Debugging helper: run the extraction pipeline synchronously on a local file.
 
-Calls the real LLM configured in .env (LLM_PROVIDER, LLM_MODEL, LLM_API_KEY).
-Will be superseded by the asynchronous worker.
+Calls the real LLM configured in .env (LLM_PROVIDER, LLM_MODEL, LLM_API_KEY), bypassing the
+API, the queue and storage. Useful for iterating on prompts with real documents.
 
 Usage:
     uv run python -m scripts.extract_file path/to/invoice.pdf --type invoice

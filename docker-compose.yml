@@ -1,3 +1,22 @@
+# `docker compose up --build` starts the whole stack (API on :8000).
+# For local development with `uv run`, start only the infrastructure:
+#   docker compose up -d postgres redis minio minio-setup
+
+# Shared by the api, worker and migrate services. Values from .env (e.g. LLM_API_KEY) are
+# loaded when the file exists; hostnames are overridden to point at the other containers.
+x-app: &app
+  build: .
+  image: docs-extraction:latest
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-docs}:${POSTGRES_PASSWORD:-docs}@postgres:5432/${POSTGRES_DB:-docs_extraction}
+    REDIS_URL: redis://redis:6379/0
+    S3_ENDPOINT: minio:9000
+    LOG_FORMAT: json
+  restart: unless-stopped
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -54,6 +73,36 @@ services:
     environment:
       MC_HOST_minio: http://${S3_ACCESS_KEY:-minioadmin}:${S3_SECRET_KEY:-minioadmin}@minio:9000
     command: ["mb", "--ignore-existing", "minio/${S3_BUCKET:-documents}"]
+
+  # Applies database migrations once, before the API and worker start.
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+    depends_on: &app-dependencies
+      migrate:
+        condition: service_completed_successfully
+      minio-setup:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    healthcheck:
+      disable: true
+    depends_on: *app-dependencies
 
 volumes:
   postgres_data:

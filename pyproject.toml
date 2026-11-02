@@ -26,6 +26,7 @@ dependencies = [
 dev = [
     "httpx2>=2.16.0",
     "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
     "ruff>=0.17.3",
 ]
 
@@ -56,3 +57,16 @@ known-first-party = ["app"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 95
+exclude_also = [
+    "def __repr__",
+    "if __name__ == .__main__.:",
+]

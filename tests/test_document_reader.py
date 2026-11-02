@@ -183,3 +183,20 @@ def test_corrupted_image_is_rejected() -> None:
 def test_unsupported_extension_is_rejected() -> None:
     with pytest.raises(DocumentReadError, match="Unsupported"):
         _reader(_mock_llm()).read(b"hello", "notes.txt")
+
+
+def test_pdf_without_pages_is_rejected() -> None:
+    # pdfium already refuses to open a zero-page PDF; either way it must not reach the LLM.
+    with pytest.raises(DocumentReadError):
+        _reader(_mock_llm()).read(make_text_pdf([]), "empty.pdf")
+
+
+def test_images_with_alpha_are_flattened_to_rgb() -> None:
+    llm = _mock_llm()
+    buffer = io.BytesIO()
+    Image.new("RGBA", (100, 100), (255, 0, 0, 128)).save(buffer, format="PNG")
+
+    _reader(llm).read(buffer.getvalue(), "transparent.png")
+
+    (image,) = _sent_images(llm)
+    assert Image.open(io.BytesIO(base64.b64decode(image["base64"]))).mode == "RGB"
