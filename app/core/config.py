@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +18,13 @@ class Settings(BaseSettings):
 
     storage_dir: Path = Path("storage")
     max_upload_size_mb: int = Field(default=10, gt=0)
+
+    llm_provider: Literal["anthropic", "openai"] = "anthropic"
+    llm_model: str = "claude-opus-5-5"
+    llm_api_key: SecretStr | None = None
+    llm_max_tokens: int = Field(default=16000, gt=0)
+    llm_timeout_seconds: float = Field(default=120.0, gt=0)
+    prompt_version: str = Field(default="v1", pattern=r"^v\d+$")
 
     @property
     def max_upload_size_bytes(self) -> int:
