@@ -1,5 +1,4 @@
 from functools import lru_cache
-from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr
@@ -16,8 +15,13 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://docs:docs@localhost:5432/docs_extraction"
 
-    storage_dir: Path = Path("storage")
     max_upload_size_mb: int = Field(default=10, gt=0)
+
+    s3_endpoint: str = "localhost:9000"
+    s3_access_key: str = "minioadmin"
+    s3_secret_key: SecretStr = SecretStr("minioadmin")
+    s3_bucket: str = "documents"
+    s3_secure: bool = False
 
     llm_provider: Literal["anthropic", "openai"] = "openai"
     llm_model: str = "gpt-6-luna"

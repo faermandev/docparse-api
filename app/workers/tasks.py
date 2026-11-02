@@ -10,7 +10,7 @@ from app.core.errors import QueueUnavailableError
 from app.db.session import SessionLocal
 from app.services.extraction import ExtractionService, build_extraction_service
 from app.services.processing import TransientJobError, process_job
-from app.services.storage import LocalFileStorage
+from app.services.storage import get_storage
 from app.workers.celery_app import celery_app
 
 MAX_RETRY_DELAY_SECONDS = 600.0
@@ -35,7 +35,7 @@ def process_job_task(self: Task, job_id: str) -> str | None:
         try:
             status = process_job(
                 db,
-                LocalFileStorage(settings.storage_dir),
+                get_storage(),
                 get_extraction_service,
                 uuid.UUID(job_id),
                 is_final_attempt=retries >= (self.max_retries or 0),

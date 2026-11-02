@@ -14,7 +14,7 @@ from app.models import ExtractionJob, JobStatus
 from app.services.document_reader import DocumentReadError
 from app.services.extraction import ExtractionError, ExtractionService
 from app.services.llm import is_transient_llm_error
-from app.services.storage import LocalFileStorage
+from app.services.storage import ObjectNotFoundError, Storage, StorageUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class TransientJobError(Exception):
 
 def process_job(
     db: Session,
-    storage: LocalFileStorage,
+    storage: Storage,
     get_service: Callable[[], ExtractionService],
     job_id: uuid.UUID,
     *,
@@ -52,19 +52,20 @@ def process_job(
     try:
         data = storage.read(job.storage_key)
         result = get_service().extract_document(data, job.original_filename, job.document_type)
-    except FileNotFoundError:
+    except ObjectNotFoundError:
         return _fail(db, job, "Uploaded file is missing from storage.")
     except (DocumentReadError, ExtractionError) as exc:
         return _fail(db, job, str(exc))
     except Exception as exc:
-        if not is_transient_llm_error(exc):
+        if not _is_transient(exc):
             logger.exception("Unexpected error processing job %s", job_id)
             return _fail(db, job, "Internal error while processing the document.")
         if is_final_attempt:
             return _fail(
                 db,
                 job,
-                f"LLM provider unavailable after {job.attempts} attempt(s) ({type(exc).__name__}).",
+                f"Service temporarily unavailable after {job.attempts} attempt(s) "
+                f"({type(exc).__name__}).",
             )
         job.status = JobStatus.PENDING
         job.error_message = f"Attempt {job.attempts} failed ({type(exc).__name__}); retrying."
@@ -77,6 +78,10 @@ def process_job(
     db.commit()
     logger.info("Job %s completed after %d attempt(s)", job_id, job.attempts)
     return JobStatus.COMPLETED
+
+
+def _is_transient(exc: BaseException) -> bool:
+    return isinstance(exc, StorageUnavailableError) or is_transient_llm_error(exc)
 
 
 def _fail(db: Session, job: ExtractionJob, message: str) -> JobStatus:

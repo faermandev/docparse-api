@@ -10,7 +10,7 @@ from app.api.deps import get_job_enqueuer
 from app.core.config import Settings, get_settings
 from app.core.errors import QueueUnavailableError
 from app.models import DocumentType, ExtractionJob, JobStatus
-from app.services.storage import LocalFileStorage
+from app.services.storage import InMemoryStorage, StorageUnavailableError, StoredObject
 
 PDF_BYTES = b"%PDF-1.7\n%fake pdf content\n%%EOF"
 
@@ -49,7 +49,7 @@ def _make_job(db: Session, *, status: JobStatus, created_at: datetime) -> Extrac
 
 @pytest.mark.parametrize("filename", ["invoice.pdf", "scan.PNG", "photo.jpeg", "page.webp"])
 def test_create_job_accepts_supported_files(
-    client: TestClient, storage: LocalFileStorage, filename: str
+    client: TestClient, storage: InMemoryStorage, filename: str
 ) -> None:
     response = _upload(client, filename=filename)
 
@@ -63,8 +63,28 @@ def test_create_job_accepts_supported_files(
     assert "storage_key" not in body
 
     extension = filename.rsplit(".", 1)[1].lower()
-    stored = storage._path_for(f"{body['id']}.{extension}")
-    assert stored.read_bytes() == PDF_BYTES
+    expected_type = {"pdf": "application/pdf", "png": "image/png", "jpeg": "image/jpeg"}.get(
+        extension, "image/webp"
+    )
+    assert storage.objects[f"{body['id']}.{extension}"] == StoredObject(PDF_BYTES, expected_type)
+
+
+def test_create_job_returns_503_when_storage_is_down(
+    client: TestClient,
+    storage: InMemoryStorage,
+    enqueued: list[uuid.UUID],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(*_: object) -> None:
+        raise StorageUnavailableError("File storage is unavailable; try again later.")
+
+    monkeypatch.setattr(storage, "save", unavailable)
+
+    response = _upload(client)
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "storage_unavailable"
+    assert enqueued == []
 
 
 def test_create_job_enqueues_job_for_processing(
@@ -167,6 +187,50 @@ def test_get_job_returns_422_for_malformed_id(client: TestClient) -> None:
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
+
+
+# GET /jobs/{id}/file
+
+
+def test_download_returns_original_file(client: TestClient) -> None:
+    created = _upload(client, filename="nota.pdf").json()
+
+    response = client.get(f"/jobs/{created['id']}/file")
+
+    assert response.status_code == 200
+    assert response.content == PDF_BYTES
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-disposition"] == 'attachment; filename="nota.pdf"'
+
+
+def test_download_encodes_non_ascii_filenames(client: TestClient) -> None:
+    created = _upload(client, filename="currículo joão.png", document_type="resume").json()
+
+    response = client.get(f"/jobs/{created['id']}/file")
+
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["content-disposition"] == (
+        "attachment; filename*=utf-8''curr%C3%ADculo%20jo%C3%A3o.png"
+    )
+
+
+def test_download_returns_404_for_unknown_job(client: TestClient) -> None:
+    response = client.get(f"/jobs/{uuid.uuid4()}/file")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_download_returns_404_when_file_is_gone(
+    client: TestClient, storage: InMemoryStorage
+) -> None:
+    created = _upload(client).json()
+    storage.objects.clear()
+
+    response = client.get(f"/jobs/{created['id']}/file")
+
+    assert response.status_code == 404
+    assert "no longer available" in response.json()["error"]["message"]
 
 
 # GET /jobs

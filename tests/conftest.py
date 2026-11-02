@@ -1,6 +1,5 @@
 import uuid
 from collections.abc import Iterator
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,7 +12,7 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import create_app
-from app.services.storage import LocalFileStorage
+from app.services.storage import InMemoryStorage
 
 
 def _test_database_url() -> URL:
@@ -64,8 +63,8 @@ def db_session(engine: Engine) -> Iterator[Session]:
 
 
 @pytest.fixture
-def storage(tmp_path: Path) -> LocalFileStorage:
-    return LocalFileStorage(tmp_path / "storage")
+def storage() -> InMemoryStorage:
+    return InMemoryStorage()
 
 
 @pytest.fixture
@@ -76,7 +75,7 @@ def enqueued() -> list[uuid.UUID]:
 
 @pytest.fixture
 def client(
-    db_session: Session, storage: LocalFileStorage, enqueued: list[uuid.UUID]
+    db_session: Session, storage: InMemoryStorage, enqueued: list[uuid.UUID]
 ) -> Iterator[TestClient]:
     app = create_app()
     app.dependency_overrides[get_db] = lambda: db_session

@@ -11,6 +11,7 @@ dependencies = [
     "langchain>=1.4.8",
     "langchain-anthropic>=1.7.9",
     "langchain-openai>=1.7.3",
+    "minio>=7.2.20",
     "pillow>=13.0.0",
     "psycopg[binary]>=3.3.6",
     "pydantic-settings>=2.16.2",

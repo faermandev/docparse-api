@@ -14,15 +14,22 @@ from app.core.errors import (
     UnsupportedFileTypeError,
 )
 from app.models import DocumentType, ExtractionJob, JobStatus
-from app.services.storage import LocalFileStorage
+from app.services.storage import ObjectNotFoundError, Storage
 
-ALLOWED_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".png", ".jpg", ".jpeg", ".webp"})
+CONTENT_TYPES: dict[str, str] = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+ALLOWED_EXTENSIONS: frozenset[str] = frozenset(CONTENT_TYPES)
 MAX_FILENAME_LENGTH = 255
 
 
 def create_job(
     db: Session,
-    storage: LocalFileStorage,
+    storage: Storage,
     *,
     file: BinaryIO,
     filename: str,
@@ -51,7 +58,7 @@ def create_job(
 
     job_id = uuid.uuid4()
     storage_key = f"{job_id}{extension}"
-    storage.save(storage_key, data)
+    storage.save(storage_key, data, CONTENT_TYPES[extension])
 
     job = ExtractionJob(
         id=job_id,
@@ -85,6 +92,16 @@ def get_job(db: Session, job_id: uuid.UUID) -> ExtractionJob:
     if job is None:
         raise NotFoundError(f"Job {job_id} not found.")
     return job
+
+
+def read_job_file(storage: Storage, job: ExtractionJob) -> tuple[bytes, str]:
+    """Return the original upload and its content type."""
+    try:
+        data = storage.read(job.storage_key)
+    except ObjectNotFoundError:
+        raise NotFoundError(f"File for job {job.id} is no longer available.") from None
+    extension = PurePath(job.storage_key).suffix.lower()
+    return data, CONTENT_TYPES.get(extension, "application/octet-stream")
 
 
 def list_jobs(

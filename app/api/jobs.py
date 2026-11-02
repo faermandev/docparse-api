@@ -1,13 +1,15 @@
 import uuid
 from typing import Annotated, Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, File, Form, Query, UploadFile, status
+from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
 
 from app.api.deps import DbSession, EnqueuerDep, SettingsDep, StorageDep
 from app.models import DocumentType, JobStatus
 from app.schemas.errors import ErrorResponse
 from app.schemas.jobs import JobList, JobRead
 from app.services import jobs as job_service
+from app.services.jobs import CONTENT_TYPES
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -57,6 +59,37 @@ def create_job(
 def get_job(db: DbSession, job_id: uuid.UUID) -> JobRead:
     """Return a job's current status and, once completed, its extraction result."""
     return JobRead.model_validate(job_service.get_job(db, job_id))
+
+
+@router.get(
+    "/{job_id}/file",
+    response_class=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "content": {content_type: {} for content_type in set(CONTENT_TYPES.values())},
+            "description": "The originally uploaded file.",
+        },
+        **_ERROR_RESPONSES,
+        status.HTTP_404_NOT_FOUND: {"model": ErrorResponse},
+        status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ErrorResponse},
+    },
+)
+def download_job_file(db: DbSession, storage: StorageDep, job_id: uuid.UUID) -> Response:
+    """Download the original file uploaded for a job."""
+    job = job_service.get_job(db, job_id)
+    data, content_type = job_service.read_job_file(storage, job)
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Content-Disposition": _attachment_header(job.original_filename)},
+    )
+
+
+def _attachment_header(filename: str) -> str:
+    quoted = quote(filename)
+    if quoted == filename:
+        return f'attachment; filename="{filename}"'
+    return f"attachment; filename*=utf-8''{quoted}"  # RFC 5987, for non-ASCII names
 
 
 @router.get("", response_model=JobList, responses=_ERROR_RESPONSES)

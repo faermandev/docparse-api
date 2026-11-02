@@ -18,9 +18,6 @@ htmlcov/
 # Environment
 .env
 
-# Local uploaded files
-storage/
-
 # Editors / OS
 .vscode/
 .idea/
