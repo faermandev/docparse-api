@@ -37,11 +37,12 @@ def _status_error(sdk: Any, code: int) -> Exception:
 
 
 @pytest.fixture
-def job(db_session: Session, storage: InMemoryStorage) -> ExtractionJob:
+def job(db_session: Session, storage: InMemoryStorage, owner_id: uuid.UUID) -> ExtractionJob:
     job_id = uuid.uuid4()
     storage.save(f"{job_id}.pdf", b"%PDF-fake", "application/pdf")
     job = ExtractionJob(
         id=job_id,
+        api_key_id=owner_id,
         status=JobStatus.PENDING,
         document_type=DocumentType.RESUME,
         original_filename="cv.pdf",

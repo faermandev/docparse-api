@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, Integer, String, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -46,6 +46,9 @@ class ExtractionJob(Base):
         index=True,
     )
     document_type: Mapped[DocumentType] = mapped_column(_str_enum(DocumentType, "document_type"))
+    api_key_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="RESTRICT"), index=True
+    )
     original_filename: Mapped[str] = mapped_column(String(255))
     storage_key: Mapped[str] = mapped_column(String(512))
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

@@ -4,10 +4,10 @@ State flow: pending → processing → completed | failed. A transient failure t
 retried moves the job back to pending until the next attempt.
 """
 
-import logging
 import uuid
 from collections.abc import Callable
 
+import structlog
 from sqlalchemy.orm import Session
 
 from app.models import ExtractionJob, JobStatus
@@ -16,7 +16,7 @@ from app.services.extraction import ExtractionError, ExtractionService
 from app.services.llm import is_transient_llm_error
 from app.services.storage import ObjectNotFoundError, Storage, StorageUnavailableError
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 _TERMINAL_STATUSES = frozenset({JobStatus.COMPLETED, JobStatus.FAILED})
 
@@ -39,10 +39,10 @@ def process_job(
     """
     job = db.get(ExtractionJob, job_id)
     if job is None:
-        logger.warning("Job %s not found; skipping", job_id)
+        logger.warning("job_not_found")
         return None
     if job.status in _TERMINAL_STATUSES:
-        logger.info("Job %s already %s; skipping", job_id, job.status)
+        logger.info("job_already_finished", status=job.status.value)
         return job.status
 
     job.status = JobStatus.PROCESSING
@@ -58,7 +58,7 @@ def process_job(
         return _fail(db, job, str(exc))
     except Exception as exc:
         if not _is_transient(exc):
-            logger.exception("Unexpected error processing job %s", job_id)
+            logger.exception("job_unexpected_error")
             return _fail(db, job, "Internal error while processing the document.")
         if is_final_attempt:
             return _fail(
@@ -70,13 +70,14 @@ def process_job(
         job.status = JobStatus.PENDING
         job.error_message = f"Attempt {job.attempts} failed ({type(exc).__name__}); retrying."
         db.commit()
+        logger.warning("job_attempt_failed", error=type(exc).__name__, attempts=job.attempts)
         raise TransientJobError(str(exc)) from exc
 
     job.status = JobStatus.COMPLETED
     job.result = result.model_dump(mode="json")
     job.error_message = None
     db.commit()
-    logger.info("Job %s completed after %d attempt(s)", job_id, job.attempts)
+    logger.info("job_completed", attempts=job.attempts)
     return JobStatus.COMPLETED
 
 
@@ -88,5 +89,5 @@ def _fail(db: Session, job: ExtractionJob, message: str) -> JobStatus:
     job.status = JobStatus.FAILED
     job.error_message = message
     db.commit()
-    logger.warning("Job %s failed: %s", job.id, message)
+    logger.warning("job_failed", error_message=message, attempts=job.attempts)
     return JobStatus.FAILED

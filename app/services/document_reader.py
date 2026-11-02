@@ -6,19 +6,19 @@ images are sent to the vision-capable chat model for transcription.
 
 import base64
 import io
-import logging
 from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Any, Literal
 
 import pypdfium2 as pdfium
+import structlog
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.prompts import TRANSCRIPTION_PROMPT, load_prompt
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 IMAGE_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 # A PDF averaging fewer non-whitespace characters per page than this is treated as scanned.
@@ -67,11 +67,11 @@ class DocumentReader:
             raise DocumentReadError(f"Unsupported file extension {extension or '(none)'!r}.")
 
         logger.info(
-            "Read %s via %s (%d page(s), %d chars)",
-            filename,
-            document.source,
-            document.page_count,
-            len(document.text),
+            "document_read",
+            filename=filename,
+            source=document.source,
+            page_count=document.page_count,
+            chars=len(document.text),
         )
         return document
 

@@ -8,12 +8,12 @@ Usage:
 """
 
 import argparse
-import logging
 import sys
 import time
 from pathlib import Path
 
 from app.core.config import get_settings
+from app.core.logging import configure_logging
 from app.models import DocumentType
 from app.services.document_reader import DocumentReadError
 from app.services.extraction import ExtractionError, build_extraction_service
@@ -25,8 +25,9 @@ def main() -> int:
     parser.add_argument("--type", required=True, choices=[t.value for t in DocumentType])
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    service = build_extraction_service(get_settings())
+    settings = get_settings()
+    configure_logging(settings.log_level, settings.log_format)
+    service = build_extraction_service(settings)
 
     started = time.perf_counter()
     try:

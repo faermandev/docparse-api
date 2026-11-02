@@ -3,6 +3,7 @@ from collections.abc import Callable, Sequence
 from pathlib import PurePath
 from typing import BinaryIO
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,8 @@ from app.core.errors import (
 from app.models import DocumentType, ExtractionJob, JobStatus
 from app.services.storage import ObjectNotFoundError, Storage
 
+logger = structlog.get_logger(__name__)
+
 CONTENT_TYPES: dict[str, str] = {
     ".pdf": "application/pdf",
     ".png": "image/png",
@@ -27,10 +30,24 @@ ALLOWED_EXTENSIONS: frozenset[str] = frozenset(CONTENT_TYPES)
 MAX_FILENAME_LENGTH = 255
 
 
+def detect_content_type(data: bytes) -> str | None:
+    """Identify an allowed file type from its leading "magic" bytes."""
+    if data.startswith(b"%PDF-"):
+        return "application/pdf"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def create_job(
     db: Session,
     storage: Storage,
     *,
+    owner_id: uuid.UUID,
     file: BinaryIO,
     filename: str,
     document_type: DocumentType,
@@ -56,12 +73,22 @@ def create_job(
             details={"max_size_bytes": max_size_bytes},
         )
 
+    # The extension is only a claim; the content must actually be that type.
+    content_type = CONTENT_TYPES[extension]
+    detected = detect_content_type(data)
+    if detected != content_type:
+        raise UnsupportedFileTypeError(
+            f"File content does not match its {extension!r} extension.",
+            details={"expected": content_type, "detected": detected},
+        )
+
     job_id = uuid.uuid4()
     storage_key = f"{job_id}{extension}"
-    storage.save(storage_key, data, CONTENT_TYPES[extension])
+    storage.save(storage_key, data, content_type)
 
     job = ExtractionJob(
         id=job_id,
+        api_key_id=owner_id,
         status=JobStatus.PENDING,
         document_type=document_type,
         original_filename=safe_name,
@@ -84,11 +111,23 @@ def create_job(
         db.commit()
         raise
     db.refresh(job)
+    logger.info(
+        "job_created",
+        job_id=str(job.id),
+        api_key_id=str(owner_id),
+        document_type=document_type.value,
+        size_bytes=len(data),
+    )
     return job
 
 
-def get_job(db: Session, job_id: uuid.UUID) -> ExtractionJob:
-    job = db.get(ExtractionJob, job_id)
+def get_job(db: Session, job_id: uuid.UUID, *, owner_id: uuid.UUID) -> ExtractionJob:
+    """Return the caller's job. Other clients' jobs are reported as not found."""
+    job = db.scalar(
+        select(ExtractionJob).where(
+            ExtractionJob.id == job_id, ExtractionJob.api_key_id == owner_id
+        )
+    )
     if job is None:
         raise NotFoundError(f"Job {job_id} not found.")
     return job
@@ -105,10 +144,15 @@ def read_job_file(storage: Storage, job: ExtractionJob) -> tuple[bytes, str]:
 
 
 def list_jobs(
-    db: Session, *, status: JobStatus | None, limit: int, offset: int
+    db: Session,
+    *,
+    owner_id: uuid.UUID,
+    status: JobStatus | None,
+    limit: int,
+    offset: int,
 ) -> tuple[Sequence[ExtractionJob], int]:
-    """Return a page of jobs (newest first) and the total count matching the filter."""
-    query = select(ExtractionJob)
+    """Return a page of the caller's jobs (newest first) and the total matching the filter."""
+    query = select(ExtractionJob).where(ExtractionJob.api_key_id == owner_id)
     if status is not None:
         query = query.where(ExtractionJob.status == status)
 

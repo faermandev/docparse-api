@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     app_env: Literal["development", "test", "production"] = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    log_format: Literal["console", "json"] = "console"
 
     database_url: str = "postgresql+psycopg://docs:docs@localhost:5432/docs_extraction"
 
@@ -40,6 +41,11 @@ class Settings(BaseSettings):
     @property
     def max_upload_size_bytes(self) -> int:
         return self.max_upload_size_mb * 1024 * 1024
+
+    @property
+    def max_request_body_bytes(self) -> int:
+        """Upload limit plus headroom for multipart boundaries and form fields."""
+        return self.max_upload_size_bytes + 64 * 1024
 
 
 @lru_cache

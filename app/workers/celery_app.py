@@ -1,6 +1,10 @@
+from typing import Any
+
 from celery import Celery
+from celery.signals import setup_logging
 
 from app.core.config import get_settings
+from app.core.logging import configure_logging
 
 settings = get_settings()
 
@@ -18,3 +22,9 @@ celery_app.conf.update(
     task_publish_retry_policy={"max_retries": 2, "interval_start": 0, "interval_step": 0.5},
     broker_connection_retry_on_startup=True,
 )
+
+
+@setup_logging.connect
+def _configure_worker_logging(**_: Any) -> None:
+    """Use our structlog setup instead of Celery's default logging."""
+    configure_logging(settings.log_level, settings.log_format)

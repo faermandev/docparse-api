@@ -2,6 +2,7 @@ import random
 import uuid
 from functools import lru_cache
 
+import structlog
 from celery import Task
 from kombu.exceptions import OperationalError
 
@@ -28,9 +29,13 @@ def retry_countdown(retries: int, base_seconds: float) -> float:
 
 
 @celery_app.task(bind=True, name="jobs.process_job", max_retries=get_settings().job_max_retries)
-def process_job_task(self: Task, job_id: str) -> str | None:
+def process_job_task(self: Task, job_id: str, request_id: str | None = None) -> str | None:
     settings = get_settings()
     retries = self.request.retries
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(
+        job_id=job_id, task_id=self.request.id, request_id=request_id, attempt=retries + 1
+    )
     with SessionLocal() as db:
         try:
             status = process_job(
@@ -47,7 +52,9 @@ def process_job_task(self: Task, job_id: str) -> str | None:
 
 
 def enqueue_process_job(job_id: uuid.UUID) -> None:
+    """Queue a job, carrying the current request id so API and worker logs can be joined."""
+    request_id = structlog.contextvars.get_contextvars().get("request_id")
     try:
-        process_job_task.delay(str(job_id))
+        process_job_task.apply_async(args=[str(job_id)], kwargs={"request_id": request_id})
     except OperationalError as exc:
         raise QueueUnavailableError("Job queue is unavailable; try again later.") from exc

@@ -13,6 +13,9 @@ from app.models import DocumentType, ExtractionJob, JobStatus
 from app.services.storage import InMemoryStorage, StorageUnavailableError, StoredObject
 
 PDF_BYTES = b"%PDF-1.7\n%fake pdf content\n%%EOF"
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 16
+WEBP_BYTES = b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"\x00" * 16
 
 
 def _upload(
@@ -29,10 +32,13 @@ def _upload(
     )
 
 
-def _make_job(db: Session, *, status: JobStatus, created_at: datetime) -> ExtractionJob:
+def _make_job(
+    db: Session, owner_id: uuid.UUID, *, status: JobStatus, created_at: datetime
+) -> ExtractionJob:
     job_id = uuid.uuid4()
     job = ExtractionJob(
         id=job_id,
+        api_key_id=owner_id,
         status=status,
         document_type=DocumentType.INVOICE,
         original_filename="doc.pdf",
@@ -47,11 +53,26 @@ def _make_job(db: Session, *, status: JobStatus, created_at: datetime) -> Extrac
 # POST /jobs
 
 
-@pytest.mark.parametrize("filename", ["invoice.pdf", "scan.PNG", "photo.jpeg", "page.webp"])
+@pytest.mark.parametrize(
+    ("filename", "content", "content_type"),
+    [
+        ("invoice.pdf", PDF_BYTES, "application/pdf"),
+        ("scan.PNG", PNG_BYTES, "image/png"),
+        ("photo.jpeg", JPEG_BYTES, "image/jpeg"),
+        ("photo.jpg", JPEG_BYTES, "image/jpeg"),
+        ("page.webp", WEBP_BYTES, "image/webp"),
+    ],
+)
 def test_create_job_accepts_supported_files(
-    client: TestClient, storage: InMemoryStorage, filename: str
+    client: TestClient,
+    storage: InMemoryStorage,
+    owner_id: uuid.UUID,
+    db_session: Session,
+    filename: str,
+    content: bytes,
+    content_type: str,
 ) -> None:
-    response = _upload(client, filename=filename)
+    response = _upload(client, filename=filename, content=content)
 
     assert response.status_code == 202
     body = response.json()
@@ -61,12 +82,31 @@ def test_create_job_accepts_supported_files(
     assert body["result"] is None
     assert body["attempts"] == 0
     assert "storage_key" not in body
+    assert "api_key_id" not in body
 
     extension = filename.rsplit(".", 1)[1].lower()
-    expected_type = {"pdf": "application/pdf", "png": "image/png", "jpeg": "image/jpeg"}.get(
-        extension, "image/webp"
-    )
-    assert storage.objects[f"{body['id']}.{extension}"] == StoredObject(PDF_BYTES, expected_type)
+    assert storage.objects[f"{body['id']}.{extension}"] == StoredObject(content, content_type)
+    assert db_session.get(ExtractionJob, uuid.UUID(body["id"])).api_key_id == owner_id  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "detected"),
+    [("invoice.pdf", PNG_BYTES, "image/png"), ("photo.png", b"MZ\x90\x00 binary", None)],
+)
+def test_create_job_rejects_content_that_does_not_match_extension(
+    client: TestClient,
+    storage: InMemoryStorage,
+    filename: str,
+    content: bytes,
+    detected: str | None,
+) -> None:
+    response = _upload(client, filename=filename, content=content)
+
+    assert response.status_code == 415
+    error = response.json()["error"]
+    assert error["code"] == "unsupported_file_type"
+    assert error["details"]["detected"] == detected
+    assert storage.objects == {}
 
 
 def test_create_job_returns_503_when_storage_is_down(
@@ -204,7 +244,9 @@ def test_download_returns_original_file(client: TestClient) -> None:
 
 
 def test_download_encodes_non_ascii_filenames(client: TestClient) -> None:
-    created = _upload(client, filename="currículo joão.png", document_type="resume").json()
+    created = _upload(
+        client, filename="currículo joão.png", content=PNG_BYTES, document_type="resume"
+    ).json()
 
     response = client.get(f"/jobs/{created['id']}/file")
 
@@ -236,10 +278,14 @@ def test_download_returns_404_when_file_is_gone(
 # GET /jobs
 
 
-def test_list_jobs_paginates_newest_first(client: TestClient, db_session: Session) -> None:
+def test_list_jobs_paginates_newest_first(
+    client: TestClient, db_session: Session, owner_id: uuid.UUID
+) -> None:
     base = datetime(2026, 1, 1, tzinfo=UTC)
     jobs = [
-        _make_job(db_session, status=JobStatus.PENDING, created_at=base + timedelta(minutes=i))
+        _make_job(
+            db_session, owner_id, status=JobStatus.PENDING, created_at=base + timedelta(minutes=i)
+        )
         for i in range(5)
     ]
     newest_first = [str(job.id) for job in reversed(jobs)]
@@ -253,10 +299,12 @@ def test_list_jobs_paginates_newest_first(client: TestClient, db_session: Sessio
     assert [item["id"] for item in second_page["items"]] == newest_first[2:4]
 
 
-def test_list_jobs_filters_by_status(client: TestClient, db_session: Session) -> None:
+def test_list_jobs_filters_by_status(
+    client: TestClient, db_session: Session, owner_id: uuid.UUID
+) -> None:
     now = datetime.now(UTC)
-    _make_job(db_session, status=JobStatus.PENDING, created_at=now)
-    failed = _make_job(db_session, status=JobStatus.FAILED, created_at=now)
+    _make_job(db_session, owner_id, status=JobStatus.PENDING, created_at=now)
+    failed = _make_job(db_session, owner_id, status=JobStatus.FAILED, created_at=now)
 
     body = client.get("/jobs", params={"status": "failed"}).json()
 

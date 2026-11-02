@@ -12,6 +12,8 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import create_app
+from app.models import ApiKey
+from app.services.api_keys import create_api_key
 from app.services.storage import InMemoryStorage
 
 
@@ -74,12 +76,26 @@ def enqueued() -> list[uuid.UUID]:
 
 
 @pytest.fixture
+def api_key(db_session: Session) -> tuple[ApiKey, str]:
+    """An active API key and its plaintext; the default client authenticates with it."""
+    return create_api_key(db_session, "test-client")
+
+
+@pytest.fixture
+def owner_id(api_key: tuple[ApiKey, str]) -> uuid.UUID:
+    return api_key[0].id
+
+
+@pytest.fixture
 def client(
-    db_session: Session, storage: InMemoryStorage, enqueued: list[uuid.UUID]
+    db_session: Session,
+    storage: InMemoryStorage,
+    enqueued: list[uuid.UUID],
+    api_key: tuple[ApiKey, str],
 ) -> Iterator[TestClient]:
     app = create_app()
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_job_enqueuer] = lambda: enqueued.append
-    with TestClient(app) as test_client:
+    with TestClient(app, headers={"X-API-Key": api_key[1]}) as test_client:
         yield test_client

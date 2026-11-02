@@ -1,4 +1,5 @@
 import io
+import uuid
 from collections.abc import Callable
 from unittest.mock import MagicMock
 
@@ -111,7 +112,8 @@ def test_create_job_removes_stored_file_when_db_commit_fails() -> None:
         create_job(
             db,
             storage,
-            file=io.BytesIO(b"%PDF"),
+            owner_id=uuid.uuid4(),
+            file=io.BytesIO(b"%PDF-1.4"),
             filename="x.pdf",
             document_type=DocumentType.INVOICE,
             max_size_bytes=1024,

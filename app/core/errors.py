@@ -1,5 +1,6 @@
 from typing import Any
 
+import structlog
 from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -7,6 +8,8 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.schemas.errors import ErrorBody, ErrorResponse
+
+logger = structlog.get_logger(__name__)
 
 
 class AppError(Exception):
@@ -19,6 +22,11 @@ class AppError(Exception):
         super().__init__(message)
         self.message = message
         self.details = details
+
+
+class UnauthorizedError(AppError):
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "unauthorized"
 
 
 class NotFoundError(AppError):
@@ -72,8 +80,16 @@ async def _http_error_handler(_: Request, exc: Exception) -> JSONResponse:
     return _error_response(exc.status_code, code, str(exc.detail))
 
 
+async def _unhandled_error_handler(_: Request, exc: Exception) -> JSONResponse:
+    logger.error("unhandled_error", exc_info=exc)
+    return _error_response(
+        status.HTTP_500_INTERNAL_SERVER_ERROR, "internal_error", "Internal server error."
+    )
+
+
 def register_error_handlers(app: FastAPI) -> None:
     """Make every error response follow the ErrorResponse schema."""
+    app.add_exception_handler(Exception, _unhandled_error_handler)
     app.add_exception_handler(AppError, _app_error_handler)
     app.add_exception_handler(RequestValidationError, _validation_error_handler)
     app.add_exception_handler(StarletteHTTPException, _http_error_handler)
