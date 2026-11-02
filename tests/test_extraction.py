@@ -12,7 +12,7 @@ from pydantic import BaseModel, SecretStr
 
 from app.core.config import Settings
 from app.models import DocumentType
-from app.prompts import PromptNotFoundError, load_prompt
+from app.prompts import TRANSCRIPTION_PROMPT, PromptNotFoundError, load_prompt
 from app.schemas.extraction import (
     EXTRACTION_SCHEMAS,
     Contract,
@@ -23,7 +23,12 @@ from app.schemas.extraction import (
     Resume,
     ResumeContact,
 )
-from app.services.extraction import ExtractionError, ExtractionService
+from app.services.document_reader import DocumentReader, DocumentText
+from app.services.extraction import (
+    ExtractionError,
+    ExtractionService,
+    build_extraction_service,
+)
 from app.services.llm import build_chat_model
 
 SAMPLES: dict[DocumentType, ExtractionResult] = {
@@ -56,6 +61,10 @@ SAMPLES: dict[DocumentType, ExtractionResult] = {
         skills=["Python"],
     ),
 }
+
+
+def _service(llm: MagicMock, reader: MagicMock | None = None) -> ExtractionService:
+    return ExtractionService(llm, prompt_version="v1", reader=reader or MagicMock())
 
 
 def _mock_llm(returns: Any = None, raises: Exception | None = None) -> MagicMock:
@@ -103,10 +112,17 @@ def test_v1_prompt_exists_for_every_document_type(document_type: DocumentType) -
     assert "<document>" in prompt
 
 
-@pytest.mark.parametrize("version", ["v999", "../v1", "latest"])
-def test_load_prompt_rejects_unknown_or_invalid_versions(version: str) -> None:
+def test_transcription_prompt_exists() -> None:
+    assert load_prompt(TRANSCRIPTION_PROMPT, "v1")
+
+
+@pytest.mark.parametrize(
+    ("name", "version"),
+    [("invoice", "v999"), ("invoice", "../v1"), ("invoice", "latest"), ("../v1/invoice", "v1")],
+)
+def test_load_prompt_rejects_unknown_or_invalid_references(name: str, version: str) -> None:
     with pytest.raises(PromptNotFoundError):
-        load_prompt(DocumentType.INVOICE, version)
+        load_prompt(name, version)
 
 
 # ExtractionService
@@ -117,7 +133,7 @@ def test_extract_returns_schema_instance(document_type: DocumentType) -> None:
     expected = SAMPLES[document_type]
     llm = _mock_llm(returns=expected)
 
-    result = ExtractionService(llm, prompt_version="v1").extract("some text", document_type)
+    result = _service(llm).extract("some text", document_type)
 
     assert result is expected
     llm.with_structured_output.assert_called_once_with(
@@ -128,7 +144,7 @@ def test_extract_returns_schema_instance(document_type: DocumentType) -> None:
 def test_extract_sends_versioned_prompt_and_wrapped_document() -> None:
     llm = _mock_llm(returns=SAMPLES[DocumentType.INVOICE])
 
-    ExtractionService(llm, prompt_version="v1").extract("TOTAL R$ 10,00", DocumentType.INVOICE)
+    _service(llm).extract("TOTAL R$ 10,00", DocumentType.INVOICE)
 
     (messages,), _ = llm.with_structured_output.return_value.invoke.call_args
     system, human = messages
@@ -143,7 +159,7 @@ def test_extract_rejects_blank_text_without_calling_llm(text: str) -> None:
     llm = _mock_llm()
 
     with pytest.raises(ExtractionError, match="no text"):
-        ExtractionService(llm, prompt_version="v1").extract(text, DocumentType.RESUME)
+        _service(llm).extract(text, DocumentType.RESUME)
 
     llm.with_structured_output.assert_not_called()
 
@@ -152,7 +168,7 @@ def test_extract_wraps_parsing_errors() -> None:
     llm = _mock_llm(raises=OutputParserException("bad json"))
 
     with pytest.raises(ExtractionError, match="Invoice schema") as exc_info:
-        ExtractionService(llm, prompt_version="v1").extract("text", DocumentType.INVOICE)
+        _service(llm).extract("text", DocumentType.INVOICE)
 
     assert isinstance(exc_info.value.__cause__, OutputParserException)
 
@@ -161,7 +177,7 @@ def test_extract_rejects_unexpected_output_type() -> None:
     llm = _mock_llm(returns={"not": "a model"})
 
     with pytest.raises(ExtractionError, match="Expected Contract"):
-        ExtractionService(llm, prompt_version="v1").extract("text", DocumentType.CONTRACT)
+        _service(llm).extract("text", DocumentType.CONTRACT)
 
 
 def test_extract_lets_provider_errors_propagate() -> None:
@@ -169,7 +185,21 @@ def test_extract_lets_provider_errors_propagate() -> None:
     llm = _mock_llm(raises=TimeoutError("provider timeout"))
 
     with pytest.raises(TimeoutError):
-        ExtractionService(llm, prompt_version="v1").extract("text", DocumentType.INVOICE)
+        _service(llm).extract("text", DocumentType.INVOICE)
+
+
+def test_extract_document_reads_file_then_extracts_text() -> None:
+    expected = SAMPLES[DocumentType.RESUME]
+    llm = _mock_llm(returns=expected)
+    reader = MagicMock(spec=DocumentReader)
+    reader.read.return_value = DocumentText(text="Ana Silva", source="pdf_text", page_count=1)
+
+    result = _service(llm, reader).extract_document(b"%PDF", "cv.pdf", DocumentType.RESUME)
+
+    assert result is expected
+    reader.read.assert_called_once_with(b"%PDF", "cv.pdf")
+    (messages,), _ = llm.with_structured_output.return_value.invoke.call_args
+    assert messages[1].content == "<document>\nAna Silva\n</document>"
 
 
 # LLM factory
@@ -192,3 +222,9 @@ def test_build_chat_model_uses_configured_provider(
     chat_model = build_chat_model(settings)
 
     assert isinstance(chat_model, expected_cls)
+
+
+def test_build_extraction_service_wires_configured_model() -> None:
+    settings = Settings(_env_file=None, llm_api_key=SecretStr("test-key"))
+
+    assert isinstance(build_extraction_service(settings), ExtractionService)

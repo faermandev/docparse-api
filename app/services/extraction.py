@@ -3,9 +3,12 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import ValidationError
 
+from app.core.config import Settings
 from app.models import DocumentType
 from app.prompts import load_prompt
 from app.schemas.extraction import EXTRACTION_SCHEMAS, ExtractionResult
+from app.services.document_reader import DocumentReader
+from app.services.llm import build_chat_model
 
 
 class ExtractionError(Exception):
@@ -17,11 +20,20 @@ class ExtractionError(Exception):
 
 
 class ExtractionService:
-    """Turns document text into a validated Pydantic object using LLM structured output."""
+    """Turns documents into validated Pydantic objects using LLM structured output."""
 
-    def __init__(self, llm: BaseChatModel, prompt_version: str) -> None:
+    def __init__(self, llm: BaseChatModel, prompt_version: str, reader: DocumentReader) -> None:
         self._llm = llm
         self._prompt_version = prompt_version
+        self._reader = reader
+
+    def extract_document(
+        self, data: bytes, filename: str, document_type: DocumentType
+    ) -> ExtractionResult:
+        """Read a PDF or image and extract its fields. Raises DocumentReadError or
+        ExtractionError for permanent failures."""
+        document = self._reader.read(data, filename)
+        return self.extract(document.text, document_type)
 
     def extract(self, text: str, document_type: DocumentType) -> ExtractionResult:
         if not text.strip():
@@ -47,3 +59,15 @@ class ExtractionService:
             SystemMessage(content=load_prompt(document_type, self._prompt_version)),
             HumanMessage(content=f"<document>\n{text}\n</document>"),
         ]
+
+
+def build_extraction_service(settings: Settings) -> ExtractionService:
+    """Wire the configured chat model into a reader and an extraction service."""
+    llm = build_chat_model(settings)
+    reader = DocumentReader(
+        llm,
+        settings.prompt_version,
+        pdf_max_pages=settings.pdf_max_pages,
+        vision_max_pages=settings.vision_max_pages,
+    )
+    return ExtractionService(llm, settings.prompt_version, reader)
