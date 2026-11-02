@@ -6,7 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_job_enqueuer
 from app.core.config import Settings, get_settings
+from app.core.errors import QueueUnavailableError
 from app.models import DocumentType, ExtractionJob, JobStatus
 from app.services.storage import LocalFileStorage
 
@@ -65,6 +67,31 @@ def test_create_job_accepts_supported_files(
     assert stored.read_bytes() == PDF_BYTES
 
 
+def test_create_job_enqueues_job_for_processing(
+    client: TestClient, enqueued: list[uuid.UUID]
+) -> None:
+    body = _upload(client).json()
+
+    assert enqueued == [uuid.UUID(body["id"])]
+
+
+def test_create_job_returns_503_and_marks_job_failed_when_queue_is_down(
+    client: TestClient, db_session: Session
+) -> None:
+    def unavailable(_: uuid.UUID) -> None:
+        raise QueueUnavailableError("Job queue is unavailable; try again later.")
+
+    client.app.dependency_overrides[get_job_enqueuer] = lambda: unavailable  # type: ignore[attr-defined]
+
+    response = _upload(client)
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "queue_unavailable"
+    (job,) = db_session.query(ExtractionJob).all()
+    assert job.status == JobStatus.FAILED
+    assert job.error_message == "Could not enqueue the job for processing."
+
+
 def test_create_job_strips_directories_from_filename(client: TestClient) -> None:
     response = _upload(client, filename="../../etc/contract.pdf", document_type="contract")
 
@@ -72,10 +99,13 @@ def test_create_job_strips_directories_from_filename(client: TestClient) -> None
     assert response.json()["original_filename"] == "contract.pdf"
 
 
-def test_create_job_rejects_unsupported_extension(client: TestClient) -> None:
+def test_create_job_rejects_unsupported_extension(
+    client: TestClient, enqueued: list[uuid.UUID]
+) -> None:
     response = _upload(client, filename="notes.txt")
 
     assert response.status_code == 415
+    assert enqueued == []
     assert response.json()["error"]["code"] == "unsupported_file_type"
 
 

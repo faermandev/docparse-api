@@ -3,7 +3,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Form, Query, UploadFile, status
 
-from app.api.deps import DbSession, SettingsDep, StorageDep
+from app.api.deps import DbSession, EnqueuerDep, SettingsDep, StorageDep
 from app.models import DocumentType, JobStatus
 from app.schemas.errors import ErrorResponse
 from app.schemas.jobs import JobList, JobRead
@@ -25,16 +25,18 @@ _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
         status.HTTP_400_BAD_REQUEST: {"model": ErrorResponse},
         status.HTTP_413_CONTENT_TOO_LARGE: {"model": ErrorResponse},
         status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: {"model": ErrorResponse},
+        status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ErrorResponse},
     },
 )
 def create_job(
     db: DbSession,
     storage: StorageDep,
     settings: SettingsDep,
+    enqueue: EnqueuerDep,
     file: Annotated[UploadFile, File(description="PDF or image (PNG, JPEG, WEBP).")],
     document_type: Annotated[DocumentType, Form()],
 ) -> JobRead:
-    """Upload a document and create a pending extraction job."""
+    """Upload a document and queue it for asynchronous extraction."""
     job = job_service.create_job(
         db,
         storage,
@@ -42,6 +44,7 @@ def create_job(
         filename=file.filename or "",
         document_type=document_type,
         max_size_bytes=settings.max_upload_size_bytes,
+        enqueue=enqueue,
     )
     return JobRead.model_validate(job)
 

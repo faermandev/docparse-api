@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     pdf_max_pages: int = Field(default=50, gt=0)
     vision_max_pages: int = Field(default=10, gt=0)
 
+    redis_url: str = "redis://localhost:6379/0"
+    job_max_retries: int = Field(default=3, ge=0)
+    job_retry_backoff_seconds: float = Field(default=10.0, gt=0)
+
     @property
     def max_upload_size_bytes(self) -> int:
         return self.max_upload_size_mb * 1024 * 1024

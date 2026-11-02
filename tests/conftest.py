@@ -1,3 +1,4 @@
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -7,7 +8,7 @@ from sqlalchemy import URL, Engine, create_engine, make_url, text
 from sqlalchemy.orm import Session
 
 from app import models  # noqa: F401  (registers all tables on Base.metadata)
-from app.api.deps import get_storage
+from app.api.deps import get_job_enqueuer, get_storage
 from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db
@@ -68,9 +69,18 @@ def storage(tmp_path: Path) -> LocalFileStorage:
 
 
 @pytest.fixture
-def client(db_session: Session, storage: LocalFileStorage) -> Iterator[TestClient]:
+def enqueued() -> list[uuid.UUID]:
+    """Job ids the API tried to enqueue (replaces Celery/Redis in API tests)."""
+    return []
+
+
+@pytest.fixture
+def client(
+    db_session: Session, storage: LocalFileStorage, enqueued: list[uuid.UUID]
+) -> Iterator[TestClient]:
     app = create_app()
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_job_enqueuer] = lambda: enqueued.append
     with TestClient(app) as test_client:
         yield test_client

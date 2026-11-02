@@ -12,6 +12,10 @@ class LocalFileStorage:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
 
+    def read(self, key: str) -> bytes:
+        """Return the stored bytes. Raises FileNotFoundError if the key does not exist."""
+        return self._path_for(key).read_bytes()
+
     def delete(self, key: str) -> None:
         self._path_for(key).unlink(missing_ok=True)
 

@@ -40,6 +40,7 @@ def test_create_job_removes_stored_file_when_db_commit_fails(tmp_path: Path) -> 
             filename="x.pdf",
             document_type=DocumentType.INVOICE,
             max_size_bytes=1024,
+            enqueue=MagicMock(),
         )
 
     db.rollback.assert_called_once()

@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import PurePath
 from typing import BinaryIO
 
@@ -10,6 +10,7 @@ from app.core.errors import (
     EmptyFileError,
     FileTooLargeError,
     NotFoundError,
+    QueueUnavailableError,
     UnsupportedFileTypeError,
 )
 from app.models import DocumentType, ExtractionJob, JobStatus
@@ -27,8 +28,9 @@ def create_job(
     filename: str,
     document_type: DocumentType,
     max_size_bytes: int,
+    enqueue: Callable[[uuid.UUID], None],
 ) -> ExtractionJob:
-    """Validate the upload, persist the file, and create a pending job."""
+    """Validate the upload, persist the file, create a pending job, and enqueue it."""
     safe_name = PurePath(filename).name[:MAX_FILENAME_LENGTH]
     extension = PurePath(safe_name).suffix.lower()
     if extension not in ALLOWED_EXTENSIONS:
@@ -64,6 +66,15 @@ def create_job(
     except Exception:
         db.rollback()
         storage.delete(storage_key)
+        raise
+
+    # Enqueue only after commit, so the worker always finds the row.
+    try:
+        enqueue(job.id)
+    except QueueUnavailableError:
+        job.status = JobStatus.FAILED
+        job.error_message = "Could not enqueue the job for processing."
+        db.commit()
         raise
     db.refresh(job)
     return job
