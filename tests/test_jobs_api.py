@@ -1,0 +1,191 @@
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from app.core.config import Settings, get_settings
+from app.models import DocumentType, ExtractionJob, JobStatus
+from app.services.storage import LocalFileStorage
+
+PDF_BYTES = b"%PDF-1.7\n%fake pdf content\n%%EOF"
+
+
+def _upload(
+    client: TestClient,
+    *,
+    filename: str = "invoice.pdf",
+    content: bytes = PDF_BYTES,
+    document_type: str = "invoice",
+) -> Any:
+    return client.post(
+        "/jobs",
+        files={"file": (filename, content, "application/octet-stream")},
+        data={"document_type": document_type},
+    )
+
+
+def _make_job(db: Session, *, status: JobStatus, created_at: datetime) -> ExtractionJob:
+    job_id = uuid.uuid4()
+    job = ExtractionJob(
+        id=job_id,
+        status=status,
+        document_type=DocumentType.INVOICE,
+        original_filename="doc.pdf",
+        storage_key=f"{job_id}.pdf",
+        created_at=created_at,
+    )
+    db.add(job)
+    db.flush()
+    return job
+
+
+# POST /jobs
+
+
+@pytest.mark.parametrize("filename", ["invoice.pdf", "scan.PNG", "photo.jpeg", "page.webp"])
+def test_create_job_accepts_supported_files(
+    client: TestClient, storage: LocalFileStorage, filename: str
+) -> None:
+    response = _upload(client, filename=filename)
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "pending"
+    assert body["document_type"] == "invoice"
+    assert body["original_filename"] == filename
+    assert body["result"] is None
+    assert body["attempts"] == 0
+    assert "storage_key" not in body
+
+    extension = filename.rsplit(".", 1)[1].lower()
+    stored = storage._path_for(f"{body['id']}.{extension}")
+    assert stored.read_bytes() == PDF_BYTES
+
+
+def test_create_job_strips_directories_from_filename(client: TestClient) -> None:
+    response = _upload(client, filename="../../etc/contract.pdf", document_type="contract")
+
+    assert response.status_code == 202
+    assert response.json()["original_filename"] == "contract.pdf"
+
+
+def test_create_job_rejects_unsupported_extension(client: TestClient) -> None:
+    response = _upload(client, filename="notes.txt")
+
+    assert response.status_code == 415
+    assert response.json()["error"]["code"] == "unsupported_file_type"
+
+
+def test_create_job_rejects_empty_file(client: TestClient) -> None:
+    response = _upload(client, content=b"")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "empty_file"
+
+
+def test_create_job_rejects_file_over_size_limit(client: TestClient) -> None:
+    client.app.dependency_overrides[get_settings] = lambda: Settings(max_upload_size_mb=1)  # type: ignore[attr-defined]
+
+    response = _upload(client, content=b"x" * (1024 * 1024 + 1))
+
+    assert response.status_code == 413
+    error = response.json()["error"]
+    assert error["code"] == "file_too_large"
+    assert error["details"] == {"max_size_bytes": 1024 * 1024}
+
+
+def test_create_job_rejects_invalid_document_type(client: TestClient) -> None:
+    response = _upload(client, document_type="passport")
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "validation_error"
+    assert error["details"][0]["loc"] == ["body", "document_type"]
+
+
+def test_create_job_requires_file(client: TestClient) -> None:
+    response = client.post("/jobs", data={"document_type": "invoice"})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["details"][0]["loc"] == ["body", "file"]
+
+
+# GET /jobs/{id}
+
+
+def test_get_job_returns_created_job(client: TestClient) -> None:
+    created = _upload(client).json()
+
+    response = client.get(f"/jobs/{created['id']}")
+
+    assert response.status_code == 200
+    assert response.json() == created
+
+
+def test_get_job_returns_404_for_unknown_id(client: TestClient) -> None:
+    response = client.get(f"/jobs/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_get_job_returns_422_for_malformed_id(client: TestClient) -> None:
+    response = client.get("/jobs/not-a-uuid")
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+# GET /jobs
+
+
+def test_list_jobs_paginates_newest_first(client: TestClient, db_session: Session) -> None:
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    jobs = [
+        _make_job(db_session, status=JobStatus.PENDING, created_at=base + timedelta(minutes=i))
+        for i in range(5)
+    ]
+    newest_first = [str(job.id) for job in reversed(jobs)]
+
+    first_page = client.get("/jobs", params={"limit": 2}).json()
+    second_page = client.get("/jobs", params={"limit": 2, "offset": 2}).json()
+
+    assert first_page["total"] == 5
+    assert (first_page["limit"], first_page["offset"]) == (2, 0)
+    assert [item["id"] for item in first_page["items"]] == newest_first[:2]
+    assert [item["id"] for item in second_page["items"]] == newest_first[2:4]
+
+
+def test_list_jobs_filters_by_status(client: TestClient, db_session: Session) -> None:
+    now = datetime.now(UTC)
+    _make_job(db_session, status=JobStatus.PENDING, created_at=now)
+    failed = _make_job(db_session, status=JobStatus.FAILED, created_at=now)
+
+    body = client.get("/jobs", params={"status": "failed"}).json()
+
+    assert body["total"] == 1
+    assert [item["id"] for item in body["items"]] == [str(failed.id)]
+
+
+def test_list_jobs_empty(client: TestClient) -> None:
+    assert client.get("/jobs").json() == {"items": [], "total": 0, "limit": 20, "offset": 0}
+
+
+@pytest.mark.parametrize(
+    "params", [{"limit": 0}, {"limit": 101}, {"offset": -1}, {"status": "unknown"}]
+)
+def test_list_jobs_rejects_invalid_query(client: TestClient, params: dict[str, Any]) -> None:
+    response = client.get("/jobs", params=params)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_unknown_route_uses_error_envelope(client: TestClient) -> None:
+    response = client.get("/does-not-exist")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
