@@ -200,3 +200,22 @@ def test_images_with_alpha_are_flattened_to_rgb() -> None:
 
     (image,) = _sent_images(llm)
     assert Image.open(io.BytesIO(base64.b64decode(image["base64"]))).mode == "RGB"
+
+
+# Progress reporting
+
+
+@pytest.mark.parametrize(
+    ("make", "filename", "expected"),
+    [
+        (lambda: make_text_pdf([LOREM]), "digital.pdf", ["reading"]),
+        (lambda: make_scanned_pdf(1), "scan.pdf", ["reading", "transcribing"]),
+        (lambda: make_image((100, 100)), "photo.png", ["reading", "transcribing"]),
+    ],
+)
+def test_reader_reports_progress_stages(make: Any, filename: str, expected: list[str]) -> None:
+    stages: list[str] = []
+
+    _reader(_mock_llm()).read(make(), filename, stages.append)
+
+    assert stages == expected

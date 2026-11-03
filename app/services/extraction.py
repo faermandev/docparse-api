@@ -7,7 +7,7 @@ from app.core.config import Settings
 from app.models import DocumentType
 from app.prompts import load_prompt
 from app.schemas.extraction import EXTRACTION_SCHEMAS, ExtractionResult
-from app.services.document_reader import DocumentReader
+from app.services.document_reader import DocumentReader, ProgressCallback
 from app.services.llm import build_chat_model
 
 
@@ -28,11 +28,19 @@ class ExtractionService:
         self._reader = reader
 
     def extract_document(
-        self, data: bytes, filename: str, document_type: DocumentType
+        self,
+        data: bytes,
+        filename: str,
+        document_type: DocumentType,
+        on_progress: ProgressCallback | None = None,
     ) -> ExtractionResult:
-        """Read a PDF or image and extract its fields. Raises DocumentReadError or
-        ExtractionError for permanent failures."""
-        document = self._reader.read(data, filename)
+        """Read a PDF or image and extract its fields, reporting each step to `on_progress`.
+
+        Raises DocumentReadError or ExtractionError for permanent failures.
+        """
+        document = self._reader.read(data, filename, on_progress)
+        if on_progress is not None:
+            on_progress("extracting")
         return self.extract(document.text, document_type)
 
     def extract(self, text: str, document_type: DocumentType) -> ExtractionResult:

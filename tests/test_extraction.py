@@ -249,9 +249,22 @@ def test_extract_document_reads_file_then_extracts_text() -> None:
     result = _service(llm, reader).extract_document(b"%PDF", "cv.pdf", DocumentType.RESUME)
 
     assert result is expected
-    reader.read.assert_called_once_with(b"%PDF", "cv.pdf")
+    reader.read.assert_called_once_with(b"%PDF", "cv.pdf", None)
     (messages,), _ = llm.with_structured_output.return_value.invoke.call_args
     assert messages[1].content == "<document>\nAna Silva\n</document>"
+
+
+def test_extract_document_reports_extracting_after_reading() -> None:
+    llm = _mock_llm(returns=SAMPLES[DocumentType.INVOICE])
+    reader = MagicMock(spec=DocumentReader)
+    stages: list[str] = []
+    reader.read.side_effect = lambda *_: (
+        stages.append("reading") or DocumentText(text="x", source="pdf_text", page_count=1)
+    )
+
+    _service(llm, reader).extract_document(b"%PDF", "a.pdf", DocumentType.INVOICE, stages.append)
+
+    assert stages == ["reading", "extracting"]
 
 
 # LLM factory

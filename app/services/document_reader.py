@@ -6,6 +6,7 @@ images are sent to the vision-capable chat model for transcription.
 
 import base64
 import io
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Any, Literal
@@ -17,6 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.prompts import TRANSCRIPTION_PROMPT, load_prompt
+from app.schemas.events import ProgressStage
 
 logger = structlog.get_logger(__name__)
 
@@ -26,6 +28,13 @@ MIN_TEXT_CHARS_PER_PAGE = 50
 # Render scale for scanned pages (1.0 = 72 DPI), and the longest side sent to the model.
 PDF_RENDER_SCALE = 2.0
 MAX_IMAGE_SIDE = 2000
+
+
+ProgressCallback = Callable[[ProgressStage], None]
+
+
+def _no_progress(_: ProgressStage) -> None:
+    pass
 
 
 class DocumentReadError(Exception):
@@ -53,11 +62,16 @@ class DocumentReader:
         self._pdf_max_pages = pdf_max_pages
         self._vision_max_pages = vision_max_pages
 
-    def read(self, data: bytes, filename: str) -> DocumentText:
+    def read(
+        self, data: bytes, filename: str, on_progress: ProgressCallback | None = None
+    ) -> DocumentText:
+        progress = on_progress or _no_progress
+        progress("reading")
         extension = PurePath(filename).suffix.lower()
         if extension == ".pdf":
-            document = self._read_pdf(data)
+            document = self._read_pdf(data, progress)
         elif extension in IMAGE_EXTENSIONS:
+            progress("transcribing")
             document = DocumentText(
                 text=self._transcribe([_encode_image(_open_image(data))]),
                 source="vision",
@@ -75,7 +89,7 @@ class DocumentReader:
         )
         return document
 
-    def _read_pdf(self, data: bytes) -> DocumentText:
+    def _read_pdf(self, data: bytes, progress: ProgressCallback) -> DocumentText:
         try:
             pdf = pdfium.PdfDocument(data)
         except pdfium.PdfiumError as exc:
@@ -105,6 +119,7 @@ class DocumentReader:
         finally:
             pdf.close()
 
+        progress("transcribing")
         return DocumentText(text=self._transcribe(images), source="vision", page_count=page_count)
 
     def _transcribe(self, images_b64: list[str]) -> str:

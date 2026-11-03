@@ -1,17 +1,37 @@
+import itertools
 import uuid
+from collections.abc import AsyncIterator
 from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 
-from app.api.deps import CurrentApiKey, DbSession, EnqueuerDep, SettingsDep, StorageDep
+from app.api.deps import (
+    CurrentApiKey,
+    DbSession,
+    EnqueuerDep,
+    EventBrokerDep,
+    OwnedJob,
+    SessionFactory,
+    SessionFactoryDep,
+    SettingsDep,
+    StorageDep,
+)
 from app.models import DocumentType, JobStatus
 from app.schemas.errors import ErrorResponse
+from app.schemas.events import JobEvent
 from app.schemas.jobs import JobList, JobRead
 from app.services import jobs as job_service
+from app.services.events import snapshot_event
 from app.services.jobs import CONTENT_TYPES
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+# Re-read the job from the database after this long without events, in case events were
+# lost (worker crash, Redis restart) and the job has in fact finished.
+SNAPSHOT_RECHECK_SECONDS = 30.0
 
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     status.HTTP_401_UNAUTHORIZED: {"model": ErrorResponse},
@@ -89,6 +109,52 @@ def download_job_file(
         media_type=content_type,
         headers={"Content-Disposition": _attachment_header(job.original_filename)},
     )
+
+
+@router.get(
+    "/{job_id}/events",
+    response_class=EventSourceResponse,
+    responses={**_ERROR_RESPONSES, status.HTTP_404_NOT_FOUND: {"model": ErrorResponse}},
+)
+async def stream_job_events(
+    job: OwnedJob, broker: EventBrokerDep, session_factory: SessionFactoryDep
+) -> AsyncIterator[ServerSentEvent]:
+    """Stream a job's progress as Server-Sent Events until it completes or fails.
+
+    The first event is the job's current state; later events report each processing step
+    (`processing`, `reading`, `transcribing`, `extracting`, `retrying`). The final `completed`
+    or `failed` event carries the full job, including the result, and then the stream ends.
+    """
+    job_id, owner_id = job.id, job.api_key_id
+    sequence = itertools.count(1)
+
+    def sse(event: JobEvent) -> ServerSentEvent:
+        return ServerSentEvent(event=event.stage, data=event, id=str(next(sequence)))
+
+    # Subscribe before reading the snapshot, so no event can slip in between the two.
+    async with broker.subscribe(job_id) as subscription:
+        event = await run_in_threadpool(_load_snapshot, session_factory, job_id, owner_id)
+        yield sse(event)
+        while not event.is_terminal:
+            received = await subscription.get(timeout=SNAPSHOT_RECHECK_SECONDS)
+            if received is None:
+                snapshot = await run_in_threadpool(
+                    _load_snapshot, session_factory, job_id, owner_id
+                )
+                if not snapshot.is_terminal:
+                    continue
+                received = snapshot
+            event = received
+            yield sse(event)
+
+
+def _load_snapshot(
+    session_factory: SessionFactory, job_id: uuid.UUID, owner_id: uuid.UUID
+) -> JobEvent:
+    with session_factory() as db:
+        job = job_service.get_job(db, job_id, owner_id=owner_id)
+        db.refresh(job)
+        return snapshot_event(job)
 
 
 def _attachment_header(filename: str) -> str:

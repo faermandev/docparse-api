@@ -2,14 +2,14 @@
 
 Upload a PDF or a photo of an **invoice**, **contract**, or **resume** and get back validated, structured JSON.
 
-Processing is asynchronous: the upload returns a job right away, a background worker reads the document (falling back to a vision model for scans and photos), an LLM extracts the fields through native structured output, and Pydantic validates them before they are stored.
+Processing is asynchronous: the upload returns a job right away, a background worker reads the document (falling back to a vision model for scans and photos), an LLM extracts the fields through native structured output, and Pydantic validates them before they are stored. Clients can poll the job or follow each step live over Server-Sent Events.
 
 ```bash
 curl -H "X-API-Key: $KEY" -F file=@invoice.pdf -F document_type=invoice localhost:8000/jobs
 # → 202 {"id": "…", "status": "pending", …}
 
-curl -H "X-API-Key: $KEY" localhost:8000/jobs/<id>
-# → {"status": "completed", "result": {"issuer_name": "ACME Ltda", "total_amount": 1000.0, …}}
+curl -N -H "X-API-Key: $KEY" localhost:8000/jobs/<id>/events
+# → event: queued → processing → reading → extracting → completed (with the result)
 ```
 
 **Stack:** Python 3.12 · FastAPI · Pydantic v2 · SQLAlchemy 2 + Alembic · PostgreSQL · Celery + Redis · MinIO · LangChain (OpenAI or Anthropic) · structlog · pytest · Ruff · Docker Compose · GitHub Actions
@@ -32,11 +32,11 @@ flowchart LR
     end
 
     pg[(PostgreSQL<br/>jobs · api keys)]
-    redis[(Redis<br/>queue)]
+    redis[(Redis<br/>queue · progress pub/sub)]
     minio[(MinIO<br/>uploaded files)]
     llm{{LLM provider<br/>OpenAI / Anthropic}}
 
-    client -->|upload / poll| auth --> routes
+    client -->|upload · poll · SSE| auth --> routes
     routes -->|1 · store file| minio
     routes -->|2 · create job: pending| pg
     routes -->|3 · enqueue job id| redis
@@ -47,6 +47,8 @@ flowchart LR
     reader -->|scan / image: transcribe| llm
     extractor -->|structured output| llm
     task -->|processing → completed / failed| pg
+    task -.->|progress events| redis
+    redis -.->|"GET /jobs/{id}/events"| routes
 ```
 
 ### Job lifecycle
@@ -122,6 +124,7 @@ All `/jobs` endpoints require an `X-API-Key` header, and each key only sees its 
 | `POST` | `/jobs` | Upload a file (`multipart/form-data`: `file`, `document_type` = `invoice` \| `contract` \| `resume`) |
 | `GET` | `/jobs` | List your jobs, newest first: `?status=completed&limit=20&offset=0` |
 | `GET` | `/jobs/{id}` | Job status and, once completed, the extracted `result` |
+| `GET` | `/jobs/{id}/events` | Live progress as Server-Sent Events, until the job completes or fails |
 | `GET` | `/jobs/{id}/file` | Download the original upload |
 
 ### Examples
@@ -134,6 +137,9 @@ curl -s -H "X-API-Key: $KEY" \
 
 # Poll until status is "completed" or "failed"
 curl -s -H "X-API-Key: $KEY" http://localhost:8000/jobs/$JOB_ID
+
+# Or follow it live (Server-Sent Events; the stream ends with the final event)
+curl -s -N -H "X-API-Key: $KEY" http://localhost:8000/jobs/$JOB_ID/events
 
 # List failed jobs
 curl -s -H "X-API-Key: $KEY" "http://localhost:8000/jobs?status=failed"
@@ -168,6 +174,28 @@ A completed invoice job looks like this (values are illustrative):
 }
 ```
 
+### Live progress (Server-Sent Events)
+
+`GET /jobs/{id}/events` returns `text/event-stream`. The first event is always the job's current state, so connecting late, or reconnecting, is safe; then each step is pushed as it happens, and the stream closes after `completed` or `failed`, whose `job` field carries the full result:
+
+```
+event: queued
+data: {"stage":"queued","status":"pending","attempt":0,"message":null,"at":"…","job":null}
+id: 1
+
+event: processing
+data: {"stage":"processing","status":"processing","attempt":1, …}
+id: 2
+
+event: reading        (then "transcribing" for scans and images)
+event: extracting
+event: completed
+data: {"stage":"completed","status":"completed", …, "job":{…, "result":{…}}}
+id: 5
+```
+
+Other stages: `retrying` (a transient failure; `message` says why) and `failed`. Idle connections get a `: ping` comment every 15 s. Browsers' `EventSource` cannot send the `X-API-Key` header, so web clients should read the stream with `fetch` instead.
+
 Errors share one envelope:
 
 ```json
@@ -198,7 +226,8 @@ app/
   models/      ORM models: ExtractionJob, ApiKey
   prompts/     versioned system prompts (Markdown), one folder per version
   schemas/     Pydantic API schemas and LLM output schemas (Invoice, Contract, Resume)
-  services/    business logic: jobs, document reading, extraction, processing, storage, API keys
+  services/    business logic: jobs, document reading, extraction, processing, progress
+               events, storage, API keys
   workers/     Celery app and tasks
 alembic/       database migrations
 scripts/       create_api_key, extract_file
@@ -216,11 +245,12 @@ tests/         pytest suite (PostgreSQL-backed, LLM always mocked)
 - **API keys hashed with SHA-256:** the keys are 256-bit random tokens, so a slow password hash adds nothing, and an indexed lookup by digest never compares plaintext. Another client's job returns 404 rather than 403, so its existence is not revealed.
 - **Upload hardening:** the body size is checked from `Content-Length` before anything is read (chunked uploads are refused with 411), and the file's magic bytes must match its extension.
 - **Observability:** structlog renders our logs, uvicorn's and Celery's through one pipeline. The request id from the upload is passed to the Celery task, so one id follows a document from the HTTP request to the end of its extraction.
+- **Live progress over Redis pub/sub + SSE:** the worker publishes each step on a per-job channel, and `GET /jobs/{id}/events` relays it using FastAPI's native SSE support. Pub/sub drops messages nobody is listening to, so the endpoint subscribes first, then sends a snapshot from PostgreSQL, which keeps the database the source of truth and makes reconnecting safe. If no event arrives for 30 s, it re-reads the database, so a lost final event cannot leave a stream open forever. Publishing is best effort and can never fail a job.
 - **Tests run against real PostgreSQL** (each test inside a rolled-back transaction) and never call an LLM. Real SDK exception classes are used to test retry classification.
 
 ## Limitations and next steps
 
-- Polling only; a webhook or server-sent events on job completion would avoid it.
+- No webhooks: clients either poll or keep an SSE connection open.
 - A job claims no database lock while processing. Late acknowledgment plus idempotency covers redelivery, but two workers could, in rare cases, process the same job concurrently.
 - No admin API for keys: they are created and revoked with the script or SQL.
 - There is no evaluation suite against labeled documents yet, which would be the next step before tuning prompts or comparing models.

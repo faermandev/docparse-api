@@ -9,6 +9,7 @@ from kombu.exceptions import OperationalError
 from app.core.config import get_settings
 from app.core.errors import QueueUnavailableError
 from app.db.session import SessionLocal
+from app.services.events import get_event_broker
 from app.services.extraction import ExtractionService, build_extraction_service
 from app.services.processing import TransientJobError, process_job
 from app.services.storage import get_storage
@@ -44,6 +45,7 @@ def process_job_task(self: Task, job_id: str, request_id: str | None = None) -> 
                 get_extraction_service,
                 uuid.UUID(job_id),
                 is_final_attempt=retries >= (self.max_retries or 0),
+                publish=get_event_broker().publish,
             )
         except TransientJobError as exc:
             countdown = retry_countdown(retries, settings.job_retry_backoff_seconds)

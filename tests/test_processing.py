@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.models import DocumentType, ExtractionJob, JobStatus
 from app.schemas.extraction import Resume, ResumeContact
 from app.services.document_reader import DocumentReadError
+from app.services.events import InMemoryJobEventBroker
 from app.services.extraction import ExtractionError, ExtractionService
 from app.services.llm import is_transient_llm_error
 from app.services.processing import TransientJobError, process_job
@@ -70,7 +71,14 @@ def _run(
     *,
     is_final_attempt: bool = False,
 ) -> JobStatus | None:
-    return process_job(db, storage, lambda: service, job_id, is_final_attempt=is_final_attempt)
+    return process_job(
+        db,
+        storage,
+        lambda: service,
+        job_id,
+        is_final_attempt=is_final_attempt,
+        publish=lambda *_: None,
+    )
 
 
 # process_job: state flow
@@ -86,7 +94,7 @@ def test_successful_job_is_completed_with_result(
     assert job.result == RESUME.model_dump(mode="json")
     assert job.error_message is None
     assert job.attempts == 1
-    service.extract_document.assert_called_once_with(b"%PDF-fake", "cv.pdf", DocumentType.RESUME)
+    assert service.extract_document.call_args.args == (b"%PDF-fake", "cv.pdf", DocumentType.RESUME)
 
 
 @pytest.mark.parametrize(
@@ -237,6 +245,7 @@ def task_env(
     monkeypatch.setattr(tasks, "SessionLocal", session_factory)
     monkeypatch.setattr(tasks, "get_storage", lambda: storage)
     monkeypatch.setattr(tasks, "get_extraction_service", lambda: service)
+    monkeypatch.setattr(tasks, "get_event_broker", InMemoryJobEventBroker)
 
 
 @pytest.mark.usefixtures("task_env")
