@@ -78,7 +78,7 @@ cp .env.example .env          # then set LLM_API_KEY (and LLM_PROVIDER / LLM_MOD
 docker compose up --build
 ```
 
-This starts PostgreSQL, Redis, MinIO, a one-shot bucket setup, a one-shot migration, the API on **http://localhost:8000** (interactive docs at `/docs`), and the worker.
+This starts PostgreSQL, Redis, MinIO, a one-shot bucket setup, a one-shot migration, the API on **http://localhost:8000** (web UI at `/ui/`, interactive docs at `/docs`), and the worker.
 
 Create an API key (it is printed once; only its hash is stored):
 
@@ -86,6 +86,12 @@ Create an API key (it is printed once; only its hash is stored):
 docker compose exec api python -m scripts.create_api_key --name my-client
 export KEY=dex_...
 ```
+
+### Web UI
+
+Open **http://localhost:8000/ui/**, paste your API key, and drop a document. The page shows a live "routing slip" of the processing steps as they happen, then the extracted JSON (copyable) and a download of the original file; recent jobs can be reopened from the list, even while they are still running.
+
+It is plain HTML, CSS and JavaScript in [`app/web/`](app/web/), served by FastAPI on the same origin (no build step, no CORS). The key is kept in `sessionStorage`, and the event stream is read with `fetch`, because the browser's `EventSource` cannot send the `X-API-Key` header. Dropped connections reconnect with backoff, which is safe because every stream starts from the job's current state.
 
 ### Local development
 
@@ -220,12 +226,13 @@ Settings are read from environment variables or `.env` (see [`.env.example`](.en
 
 ```
 app/
-  api/         FastAPI routes and dependencies (auth, DB session, storage, queue)
+  api/         FastAPI routes and dependencies (auth, DB session, storage, queue, events)
   core/        settings, error envelope, logging, ASGI middlewares
   db/          SQLAlchemy base and session
   models/      ORM models: ExtractionJob, ApiKey
   prompts/     versioned system prompts (Markdown), one folder per version
   schemas/     Pydantic API schemas and LLM output schemas (Invoice, Contract, Resume)
+  web/         the web UI (static HTML, CSS and JavaScript)
   services/    business logic: jobs, document reading, extraction, processing, progress
                events, storage, API keys
   workers/     Celery app and tasks

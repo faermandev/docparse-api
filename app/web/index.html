@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Docs Extraction · Intake Desk</title>
+  <meta name="description" content="Upload invoices, contracts and resumes and watch them being extracted in real time.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">§</span>
+      <div>
+        <h1>Docs Extraction</h1>
+        <p class="tagline">Intake desk · documents in, structured data out</p>
+      </div>
+    </div>
+
+    <form id="key-form" class="key-form" autocomplete="off">
+      <label for="api-key">API key</label>
+      <input id="api-key" type="password" placeholder="dex_…" spellcheck="false" required>
+      <button type="submit" class="button ghost">Use key</button>
+      <span id="key-status" class="key-status" data-state="missing">not set</span>
+    </form>
+  </header>
+
+  <main class="desk">
+    <section class="column intake" aria-labelledby="intake-title">
+      <h2 id="intake-title" class="section-title"><span>01</span> New document</h2>
+
+      <form id="upload-form" class="upload">
+        <label id="dropzone" class="dropzone" for="file-input">
+          <input id="file-input" name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" required>
+          <span class="dropzone-title">Drop a file here</span>
+          <span class="dropzone-hint">or click to choose · PDF, PNG, JPEG, WEBP · up to 10 MB</span>
+          <span id="file-name" class="dropzone-file" hidden></span>
+        </label>
+
+        <fieldset class="doc-types">
+          <legend>Document type</legend>
+          <label><input type="radio" name="document_type" value="invoice" checked><span>Invoice</span></label>
+          <label><input type="radio" name="document_type" value="contract"><span>Contract</span></label>
+          <label><input type="radio" name="document_type" value="resume"><span>Resume</span></label>
+        </fieldset>
+
+        <button id="upload-button" type="submit" class="button primary">Submit for extraction</button>
+        <p id="upload-error" class="form-error" role="alert" hidden></p>
+      </form>
+
+      <div class="recent">
+        <div class="recent-header">
+          <h2 class="section-title"><span>02</span> Recent jobs</h2>
+          <button id="refresh-jobs" type="button" class="button ghost small">Refresh</button>
+        </div>
+        <ol id="job-list" class="job-list">
+          <li class="empty">Set your API key to see your jobs.</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="column slip" aria-labelledby="slip-title" aria-live="polite">
+      <h2 id="slip-title" class="section-title"><span>03</span> Routing slip</h2>
+
+      <div id="slip-empty" class="slip-empty">
+        <p>Submit a document or pick a recent job to follow its processing live.</p>
+      </div>
+
+      <article id="slip" class="slip-card" hidden>
+        <header class="slip-head">
+          <div>
+            <p id="slip-type" class="slip-type"></p>
+            <h3 id="slip-filename" class="slip-filename"></h3>
+            <p id="slip-id" class="slip-id"></p>
+          </div>
+          <span id="slip-status" class="status-badge"></span>
+        </header>
+
+        <ol id="timeline" class="timeline"></ol>
+        <p id="connection" class="connection" hidden></p>
+
+        <section id="outcome" class="outcome" hidden>
+          <div class="outcome-head">
+            <h4 id="outcome-title">Extracted fields</h4>
+            <div class="outcome-actions">
+              <button id="copy-result" type="button" class="button ghost small">Copy JSON</button>
+              <button id="download-file" type="button" class="button ghost small">Original file</button>
+            </div>
+          </div>
+          <p id="outcome-error" class="outcome-error" hidden></p>
+          <pre id="result" class="result"></pre>
+        </section>
+      </article>
+    </section>
+  </main>
+
+  <footer class="colophon">
+    Progress is streamed with Server-Sent Events from <code>GET /jobs/{id}/events</code> ·
+    <a href="/docs">API reference</a>
+  </footer>
+</body>
+</html>
