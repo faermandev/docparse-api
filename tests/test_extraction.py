@@ -20,8 +20,10 @@ from app.schemas.extraction import (
     ExtractionResult,
     Invoice,
     InvoiceLineItem,
+    Project,
     Resume,
     ResumeContact,
+    WorkExperience,
 )
 from app.services.document_reader import DocumentReader, DocumentText
 from app.services.extraction import (
@@ -55,8 +57,10 @@ SAMPLES: dict[DocumentType, ExtractionResult] = {
     ),
     DocumentType.RESUME: Resume(
         full_name="Ana Silva",
+        summary="Backend developer focused on Python.",
         contact=ResumeContact(email="ana@example.com", phone=None, location=None, links=[]),
         experience=[],
+        projects=[],
         education=[],
         skills=["Python"],
     ),
@@ -95,6 +99,41 @@ def test_schemas_require_every_field(schema: type[BaseModel]) -> None:
         assert set(obj["required"]) == set(obj["properties"]), obj.get("title")
 
 
+def _resume(**overrides: Any) -> Resume:
+    fields: dict[str, Any] = {
+        "full_name": "Ana Silva",
+        "summary": None,
+        "contact": ResumeContact(email=None, phone=None, location=None, links=[]),
+        "experience": [],
+        "projects": [],
+        "education": [],
+        "skills": [],
+    }
+    return Resume(**(fields | overrides))
+
+
+PROJECT = Project(
+    name="Docs Extraction API",
+    description="LLM-based extraction",
+    technologies=["Python"],
+    url=None,
+)
+JOB = WorkExperience(
+    company="ACME", title="Developer", start_date="2024-01", end_date=None, description=None
+)
+
+
+def test_resume_keeps_projects_when_there_is_no_work_experience() -> None:
+    assert _resume(projects=[PROJECT]).projects == [PROJECT]
+
+
+def test_resume_drops_projects_when_there_is_work_experience() -> None:
+    resume = _resume(experience=[JOB], projects=[PROJECT])
+
+    assert resume.experience == [JOB]
+    assert resume.projects == []
+
+
 def test_invoice_parses_iso_date_from_json() -> None:
     invoice = Invoice.model_validate_json(
         '{"invoice_number": null, "issuer_name": null, "issuer_tax_id": null,'
@@ -106,10 +145,23 @@ def test_invoice_parses_iso_date_from_json() -> None:
 # Prompts
 
 
+@pytest.mark.parametrize("version", ["v1", "v2"])
 @pytest.mark.parametrize("document_type", list(DocumentType))
-def test_v1_prompt_exists_for_every_document_type(document_type: DocumentType) -> None:
-    prompt = load_prompt(document_type, "v1")
+def test_prompt_exists_for_every_document_type(document_type: DocumentType, version: str) -> None:
+    prompt = load_prompt(document_type, version)
     assert "<document>" in prompt
+
+
+def test_default_prompt_version_has_every_prompt() -> None:
+    version = Settings(_env_file=None).prompt_version
+    for name in [*DocumentType, TRANSCRIPTION_PROMPT]:
+        assert load_prompt(name, version)
+
+
+def test_v2_resume_prompt_covers_summary_and_projects() -> None:
+    prompt = load_prompt(DocumentType.RESUME, "v2")
+    assert "summary:" in prompt
+    assert "projects:" in prompt
 
 
 def test_transcription_prompt_exists() -> None:

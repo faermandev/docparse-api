@@ -7,8 +7,9 @@ strict structured-output modes across providers.
 
 from collections.abc import Mapping
 from datetime import date
+from typing import Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.models import DocumentType
 
@@ -85,6 +86,13 @@ class WorkExperience(BaseModel):
     description: str | None = Field(description="Responsibilities and achievements.")
 
 
+class Project(BaseModel):
+    name: str = Field(description="Project name or a short title for it.")
+    description: str | None = Field(description="What the project does and the person's role.")
+    technologies: list[str] = Field(description="Tools, languages and frameworks used.")
+    url: str | None = Field(description="Link to the project or its repository, if given.")
+
+
 class Education(BaseModel):
     institution: str
     degree: str | None = Field(description="Degree or certificate, e.g. BSc, MBA.")
@@ -97,10 +105,25 @@ class Resume(BaseModel):
     """Fields extracted from a resume / CV."""
 
     full_name: str | None
+    summary: str | None = Field(
+        description="The resume's own summary or objective; if it has none, a 1-2 sentence "
+        "overview of the candidate based only on the document."
+    )
     contact: ResumeContact
     experience: list[WorkExperience] = Field(description="Work history, most recent first.")
+    projects: list[Project] = Field(
+        description="Personal, academic or freelance projects. Filled only when the resume "
+        "has no work experience; empty otherwise."
+    )
     education: list[Education]
     skills: list[str] = Field(description="Technical and professional skills.")
+
+    @model_validator(mode="after")
+    def _projects_only_without_experience(self) -> Self:
+        """Projects stand in for work experience, so they are dropped when experience exists."""
+        if self.experience:
+            self.projects = []
+        return self
 
 
 ExtractionResult = Invoice | Contract | Resume

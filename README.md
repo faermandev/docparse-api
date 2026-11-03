@@ -182,7 +182,7 @@ Settings are read from environment variables or `.env` (see [`.env.example`](.en
 |---|---|---|
 | `LLM_PROVIDER` / `LLM_MODEL` | `openai` / `gpt-6-luna` | Any chat model LangChain supports for these providers (e.g. `anthropic` / `claude-opus-5-5`) |
 | `LLM_API_KEY` | — | Provider API key |
-| `PROMPT_VERSION` | `v1` | Folder under `app/prompts/` to load prompts from |
+| `PROMPT_VERSION` | `v2` | Folder under `app/prompts/` to load prompts from |
 | `MAX_UPLOAD_SIZE_MB` | `10` | Upload limit, enforced before the body is read |
 | `PDF_MAX_PAGES` / `VISION_MAX_PAGES` | `50` / `10` | Page limits for digital PDFs and for scans sent to the vision model |
 | `JOB_MAX_RETRIES` / `JOB_RETRY_BACKOFF_SECONDS` | `3` / `10` | Retry policy for transient failures |
@@ -196,7 +196,7 @@ app/
   core/        settings, error envelope, logging, ASGI middlewares
   db/          SQLAlchemy base and session
   models/      ORM models: ExtractionJob, ApiKey
-  prompts/v1/  versioned system prompts (Markdown)
+  prompts/     versioned system prompts (Markdown), one folder per version
   schemas/     Pydantic API schemas and LLM output schemas (Invoice, Contract, Resume)
   services/    business logic: jobs, document reading, extraction, processing, storage, API keys
   workers/     Celery app and tasks
@@ -209,7 +209,7 @@ tests/         pytest suite (PostgreSQL-backed, LLM always mocked)
 
 - **Native structured output (`method="json_schema"`)** instead of forced tool calling. Recent models (e.g. Claude Opus 5.5) reject forced `tool_choice`, and native JSON Schema output is constrained by the provider itself. Every output field is required but nullable, so the schemas also satisfy OpenAI's strict mode, and the model has to answer `null` explicitly instead of inventing values.
 - **Two-step reading for scans and images:** the vision model transcribes the document to text first, then the same text extraction runs as for digital PDFs. One extraction path to test and tune. Digital PDFs never reach the vision model; they are read locally with pdfium.
-- **Prompts as versioned files** (`app/prompts/v1/*.md`), selected by `PROMPT_VERSION`, so a prompt change is a reviewable diff and can be rolled back with configuration. Document text is wrapped in `<document>` tags and treated as untrusted data.
+- **Prompts as versioned files** (`app/prompts/v2/*.md`), selected by `PROMPT_VERSION`, so a prompt change is a reviewable diff and can be rolled back with configuration. Document text is wrapped in `<document>` tags and treated as untrusted data.
 - **Job state lives in PostgreSQL, not in Celery:** there is no result backend. The task is a thin wrapper around a plain `process_job()` function, which keeps the state machine testable without a broker. Tasks are idempotent (finished jobs are skipped) and acknowledged late, so a crashed worker's job is redelivered.
 - **Enqueue after commit:** the worker always finds the row. If Redis is down, the job is marked `failed` and the API returns 503 instead of leaving it pending forever.
 - **Storage behind a `Storage` protocol,** with a MinIO implementation for runtime and an in-memory one for tests. Downloads are proxied through the API, which enforces ownership; pre-signed URLs would expose the internal MinIO address. MinIO stopped publishing free community images, so Compose uses Chainguard's free rebuild.

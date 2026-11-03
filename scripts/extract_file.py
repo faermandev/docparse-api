@@ -24,6 +24,8 @@ def main() -> int:
     parser.add_argument("path", type=Path, help="PDF or image file")
     parser.add_argument("--type", required=True, choices=[t.value for t in DocumentType])
     args = parser.parse_args()
+    if not args.path.is_file():
+        parser.error(f"file not found: {args.path}")
 
     settings = get_settings()
     configure_logging(settings.log_level, settings.log_format)

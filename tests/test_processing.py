@@ -22,8 +22,10 @@ from app.workers.tasks import process_job_task, retry_countdown
 
 RESUME = Resume(
     full_name="Ana Silva",
+    summary=None,
     contact=ResumeContact(email=None, phone=None, location=None, links=[]),
     experience=[],
+    projects=[],
     education=[],
     skills=["Python"],
 )
