@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
+from app.api.webhooks import router as webhooks_router
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging
@@ -30,6 +31,7 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
     app.include_router(health_router)
     app.include_router(jobs_router)
+    app.include_router(webhooks_router)
 
     # Web UI: static files on the same origin as the API, so no CORS is needed.
     app.mount("/ui", StaticFiles(directory=WEB_DIR, html=True), name="ui")

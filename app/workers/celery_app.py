@@ -21,6 +21,12 @@ celery_app.conf.update(
     # Fail fast when publishing if Redis is down, instead of blocking the HTTP request.
     task_publish_retry_policy={"max_retries": 2, "interval_start": 0, "interval_step": 0.5},
     broker_connection_retry_on_startup=True,
+    # Webhook deliveries get their own queue so slow receivers never delay extractions.
+    task_routes={"webhooks.*": {"queue": "webhooks"}},
+    # Run by `celery worker -B` (embedded beat) in this project.
+    beat_schedule={
+        "sweep-webhook-deliveries": {"task": "webhooks.sweep", "schedule": 60.0},
+    },
 )
 
 

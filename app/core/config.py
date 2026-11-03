@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     job_max_retries: int = Field(default=3, ge=0)
     job_retry_backoff_seconds: float = Field(default=10.0, gt=0)
 
+    # Webhooks. "Insecure" allows http:// and private/loopback hosts: local development only.
+    webhook_allow_insecure_urls: bool = False
+    webhook_timeout_seconds: float = Field(default=10.0, gt=0)
+    webhook_max_retries: int = Field(default=5, ge=0)
+    webhook_retry_backoff_seconds: float = Field(default=30.0, gt=0)
+
     @property
     def max_upload_size_bytes(self) -> int:
         return self.max_upload_size_mb * 1024 * 1024

@@ -26,8 +26,13 @@ from app.services.events import (
     snapshot_event,
 )
 from app.services.extraction import ExtractionError, ExtractionService
-from app.services.processing import TransientJobError, process_job
+from app.services.processing import JobNotifier, TransientJobError, process_job
 from app.services.storage import InMemoryStorage
+
+
+def _no_webhook(_: uuid.UUID) -> None:
+    pass
+
 
 PDF_BYTES = b"%PDF-1.7\n%fake\n%%EOF"
 RESUME = Resume(
@@ -257,7 +262,12 @@ def _process(
     broker: InMemoryJobEventBroker,
 ) -> JobStatus | None:
     return process_job(
-        db, storage, lambda: service, job.id, is_final_attempt=False, publish=broker.publish
+        db,
+        storage,
+        lambda: service,
+        job.id,
+        is_final_attempt=False,
+        notifier=JobNotifier(publish=broker.publish, enqueue_webhook=_no_webhook),
     )
 
 
@@ -322,7 +332,7 @@ def test_publishing_problems_do_not_affect_the_job(
         lambda: _service(lambda *_, **__: RESUME),
         job.id,
         is_final_attempt=False,
-        publish=broken_publish,
+        notifier=JobNotifier(publish=broken_publish, enqueue_webhook=_no_webhook),
     )
 
     assert status == JobStatus.COMPLETED

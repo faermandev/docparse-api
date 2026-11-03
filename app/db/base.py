@@ -1,4 +1,6 @@
-from sqlalchemy import MetaData
+from enum import StrEnum
+
+from sqlalchemy import Enum, MetaData
 from sqlalchemy.orm import DeclarativeBase
 
 # Deterministic constraint names keep Alembic autogenerate diffs stable.
@@ -13,3 +15,15 @@ NAMING_CONVENTION = {
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
+
+
+def str_enum(enum_cls: type[StrEnum], name: str) -> Enum:
+    """VARCHAR + CHECK constraint storing enum values; avoids native PG enum migrations."""
+    return Enum(
+        enum_cls,
+        name=name,
+        native_enum=False,
+        create_constraint=True,
+        length=20,
+        values_callable=lambda members: [member.value for member in members],
+    )

@@ -35,6 +35,7 @@ flowchart LR
     redis[(Redis<br/>queue · progress pub/sub)]
     minio[(MinIO<br/>uploaded files)]
     llm{{LLM provider<br/>OpenAI / Anthropic}}
+    hook([Client webhook<br/>endpoint])
 
     client -->|upload · poll · SSE| auth --> routes
     routes -->|1 · store file| minio
@@ -48,6 +49,8 @@ flowchart LR
     extractor -->|structured output| llm
     task -->|processing → completed / failed| pg
     task -.->|progress events| redis
+    task -->|outbox row| pg
+    task -->|"signed POST (webhooks queue)"| hook
     redis -.->|"GET /jobs/{id}/events"| routes
 ```
 
@@ -102,7 +105,8 @@ uv run alembic upgrade head
 uv run python -m scripts.create_api_key --name dev
 
 uv run uvicorn app.main:app --reload                                        # API
-uv run celery -A app.workers.celery_app worker --pool=solo --loglevel=INFO  # worker
+uv run celery -A app.workers.celery_app worker --pool=solo --loglevel=INFO \
+  --queues=celery,webhooks --beat --schedule=/tmp/celerybeat-schedule        # worker
 ```
 
 Try the extraction on a real document without the API or queue:
@@ -131,6 +135,10 @@ All `/jobs` endpoints require an `X-API-Key` header, and each key only sees its 
 | `GET` | `/jobs` | List your jobs, newest first: `?status=completed&limit=20&offset=0` |
 | `GET` | `/jobs/{id}` | Job status and, once completed, the extracted `result` |
 | `GET` | `/jobs/{id}/events` | Live progress as Server-Sent Events, until the job completes or fails |
+| `PUT` | `/webhook` | Register or change your webhook URL (`{"url": "https://…"}`); returns the signing secret |
+| `GET` | `/webhook` | Your webhook URL and signing secret |
+| `DELETE` | `/webhook` | Stop notifications |
+| `GET` | `/webhook/deliveries` | Recent notifications and their delivery status |
 | `GET` | `/jobs/{id}/file` | Download the original upload |
 
 ### Examples
@@ -202,6 +210,47 @@ id: 5
 
 Other stages: `retrying` (a transient failure; `message` says why) and `failed`. Idle connections get a `: ping` comment every 15 s. Browsers' `EventSource` cannot send the `X-API-Key` header, so web clients should read the stream with `fetch` instead.
 
+### Webhooks
+
+Register a URL once per API key and the API will `POST` to it whenever one of that key's jobs finishes, so integrations need neither polling nor an open connection:
+
+```bash
+curl -s -X PUT -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/hooks/docs-extraction"}' http://localhost:8000/webhook
+# → {"url": "https://example.com/hooks/docs-extraction", "secret": "whsec_…", "events": ["job.completed", "job.failed"]}
+```
+
+Each notification is a JSON body with the full job (including `result` or `error_message`) and these headers:
+
+| Header | Meaning |
+|---|---|
+| `X-Webhook-Event` | `job.completed` or `job.failed` |
+| `X-Webhook-Id` | Delivery id, identical on every retry: use it to ignore duplicates |
+| `X-Webhook-Signature` | `t=<unix time>,v1=<hex HMAC-SHA256 of "<t>.<raw body>" with your secret>` |
+
+```json
+{"id": "dd04a3de-…", "type": "job.completed", "created_at": "…", "data": {"job": {"id": "…", "status": "completed", "result": {…}, …}}}
+```
+
+Verify the signature on the raw body before trusting it, and reject old timestamps to block replays:
+
+```python
+import hashlib, hmac, time
+
+
+def verify(secret: str, header: str, body: bytes, tolerance: int = 300) -> bool:
+    fields = dict(part.split("=", 1) for part in header.split(","))
+    timestamp = int(fields["t"])
+    expected = hmac.new(
+        secret.encode(), f"{timestamp}.".encode() + body, hashlib.sha256
+    ).hexdigest()
+    return abs(time.time() - timestamp) <= tolerance and hmac.compare_digest(expected, fields["v1"])
+```
+
+Answer with any `2xx` to acknowledge. Timeouts, connection errors, `408`, `429` and `5xx` are retried with exponential backoff (30 s, 60 s, 120 s, … up to 5 retries); other `4xx` and redirects (never followed) fail the delivery at once. `GET /webhook/deliveries` shows each delivery's status, attempts and last error.
+
+The URL must use HTTPS and resolve to a public address, checked on registration and again before every delivery. For local development against a receiver on your machine, set `WEBHOOK_ALLOW_INSECURE_URLS=true` (allows `http://` and private hosts such as `host.docker.internal`); never enable it in production.
+
 Errors share one envelope:
 
 ```json
@@ -234,7 +283,7 @@ app/
   schemas/     Pydantic API schemas and LLM output schemas (Invoice, Contract, Resume)
   web/         the web UI (static HTML, CSS and JavaScript)
   services/    business logic: jobs, document reading, extraction, processing, progress
-               events, storage, API keys
+               events, webhooks, storage, API keys
   workers/     Celery app and tasks
 alembic/       database migrations
 scripts/       create_api_key, extract_file
@@ -253,11 +302,14 @@ tests/         pytest suite (PostgreSQL-backed, LLM always mocked)
 - **Upload hardening:** the body size is checked from `Content-Length` before anything is read (chunked uploads are refused with 411), and the file's magic bytes must match its extension.
 - **Observability:** structlog renders our logs, uvicorn's and Celery's through one pipeline. The request id from the upload is passed to the Celery task, so one id follows a document from the HTTP request to the end of its extraction.
 - **Live progress over Redis pub/sub + SSE:** the worker publishes each step on a per-job channel, and `GET /jobs/{id}/events` relays it using FastAPI's native SSE support. Pub/sub drops messages nobody is listening to, so the endpoint subscribes first, then sends a snapshot from PostgreSQL, which keeps the database the source of truth and makes reconnecting safe. If no event arrives for 30 s, it re-reads the database, so a lost final event cannot leave a stream open forever. Publishing is best effort and can never fail a job.
+- **Webhooks with a transactional outbox:** the delivery row is written in the same transaction that finishes the job, so a notification cannot be lost between "job done" and "webhook sent". Deliveries run on their own Celery queue (a slow receiver never delays extractions), are at-least-once with a stable `X-Webhook-Id`, and are signed with HMAC-SHA256 plus a timestamp. A periodic sweep (Celery beat, embedded in the worker) re-enqueues deliveries whose task was lost.
+- **SSRF protection for client-supplied URLs:** HTTPS only, no credentials, and every resolved address must be public (private, loopback, link-local, metadata and IPv4-mapped ranges are refused). The check runs on registration and again before each delivery, since DNS can change, and redirects are not followed.
 - **Tests run against real PostgreSQL** (each test inside a rolled-back transaction) and never call an LLM. Real SDK exception classes are used to test retry classification.
 
 ## Limitations and next steps
 
-- No webhooks: clients either poll or keep an SSE connection open.
+- The webhook destination check resolves DNS and then connects separately, so a hostile DNS server could still swap the address in between (DNS rebinding). Pinning the connection to the checked IP, or sending through an egress proxy, would close that gap.
+- One webhook URL per API key, and no manual redelivery endpoint yet.
 - A job claims no database lock while processing. Late acknowledgment plus idempotency covers redelivery, but two workers could, in rare cases, process the same job concurrently.
 - No admin API for keys: they are created and revoked with the script or SQL.
 - There is no evaluation suite against labeled documents yet, which would be the next step before tuning prompts or comparing models.

@@ -3,11 +3,11 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base
+from app.db.base import Base, str_enum
 
 
 class JobStatus(StrEnum):
@@ -23,29 +23,17 @@ class DocumentType(StrEnum):
     RESUME = "resume"
 
 
-def _str_enum(enum_cls: type[StrEnum], name: str) -> Enum:
-    """VARCHAR + CHECK constraint storing enum values; avoids native PG enum migrations."""
-    return Enum(
-        enum_cls,
-        name=name,
-        native_enum=False,
-        create_constraint=True,
-        length=20,
-        values_callable=lambda members: [member.value for member in members],
-    )
-
-
 class ExtractionJob(Base):
     __tablename__ = "extraction_jobs"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     status: Mapped[JobStatus] = mapped_column(
-        _str_enum(JobStatus, "job_status"),
+        str_enum(JobStatus, "job_status"),
         default=JobStatus.PENDING,
         server_default=JobStatus.PENDING.value,
         index=True,
     )
-    document_type: Mapped[DocumentType] = mapped_column(_str_enum(DocumentType, "document_type"))
+    document_type: Mapped[DocumentType] = mapped_column(str_enum(DocumentType, "document_type"))
     api_key_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("api_keys.id", ondelete="RESTRICT"), index=True
     )

@@ -16,10 +16,15 @@ from app.services.document_reader import DocumentReadError
 from app.services.events import InMemoryJobEventBroker
 from app.services.extraction import ExtractionError, ExtractionService
 from app.services.llm import is_transient_llm_error
-from app.services.processing import TransientJobError, process_job
+from app.services.processing import JobNotifier, TransientJobError, process_job
 from app.services.storage import InMemoryStorage, StorageUnavailableError
 from app.workers import tasks
 from app.workers.tasks import process_job_task, retry_countdown
+
+
+def _no_webhook(_: uuid.UUID) -> None:
+    pass
+
 
 RESUME = Resume(
     full_name="Ana Silva",
@@ -77,7 +82,7 @@ def _run(
         lambda: service,
         job_id,
         is_final_attempt=is_final_attempt,
-        publish=lambda *_: None,
+        notifier=JobNotifier(publish=lambda *_: None, enqueue_webhook=_no_webhook),
     )
 
 
